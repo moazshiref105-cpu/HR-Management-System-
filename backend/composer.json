@@ -1,0 +1,17 @@
+{
+    "name": "hms/backend",
+    "description": "HR Management System Backend API",
+    "type": "project",
+    "autoload": {
+        "psr-4": {
+            "Hms\\Backend\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "Moaz Shiref",
+            "email": "moaz.shiref105@gmail.com"
+        }
+    ],
+    "require": {}
+}
