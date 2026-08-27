@@ -1,0 +1,410 @@
+-- SetUp module foundation: secure RBAC access, HR master data, and insurance settings.
+
+create or replace function public.user_has_permission(
+  p_user_id uuid,
+  p_permission_key text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = pg_catalog, public, pg_temp
+as $$
+  select exists (
+    select 1
+    from public.users u
+    where u.id = p_user_id
+      and u.is_active = true
+      and (
+        u.is_super_admin = true
+        or (
+          not exists (
+            select 1
+            from public.user_permissions up
+            join public.permissions p on p.id = up.permission_id
+            where up.user_id = u.id
+              and p.permission_key = p_permission_key
+              and up.effect = 'deny'
+          )
+          and (
+            exists (
+              select 1
+              from public.user_permissions up
+              join public.permissions p on p.id = up.permission_id
+              where up.user_id = u.id
+                and p.permission_key = p_permission_key
+                and up.effect = 'allow'
+            )
+            or exists (
+              select 1
+              from public.user_roles ur
+              join public.roles r on r.id = ur.role_id and r.is_active = true
+              join public.role_permissions rp on rp.role_id = r.id
+              join public.permissions p on p.id = rp.permission_id
+              where ur.user_id = u.id
+                and p.permission_key = p_permission_key
+            )
+          )
+        )
+      )
+  );
+$$;
+
+revoke all on function public.user_has_permission(uuid, text) from public;
+revoke all on function public.user_has_permission(uuid, text) from anon;
+revoke all on function public.user_has_permission(uuid, text) from authenticated;
+grant execute on function public.user_has_permission(uuid, text) to service_role;
+
+create or replace function public.replace_setup_user_roles(
+  p_user_id uuid,
+  p_role_ids bigint[],
+  p_created_by uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = pg_catalog, public, pg_temp
+as $$
+declare
+  v_role_ids bigint[];
+begin
+  select array_agg(distinct role_id order by role_id)
+  into v_role_ids
+  from unnest(coalesce(p_role_ids, '{}'::bigint[])) as roles(role_id);
+
+  if not exists (select 1 from public.users where id = p_user_id) then
+    raise exception 'User does not exist';
+  end if;
+
+  if p_created_by is null or not exists (select 1 from public.users where id = p_created_by and is_active = true) then
+    raise exception 'Active actor user is required';
+  end if;
+
+  if coalesce(cardinality(v_role_ids), 0) <> (
+    select count(*) from public.roles where id = any(coalesce(v_role_ids, '{}'::bigint[])) and is_active = true
+  ) then
+    raise exception 'Roles must exist and be active';
+  end if;
+
+  delete from public.user_roles where user_id = p_user_id;
+
+  insert into public.user_roles (user_id, role_id, created_by)
+  select p_user_id, role_id, p_created_by
+  from unnest(coalesce(v_role_ids, '{}'::bigint[])) as roles(role_id);
+end;
+$$;
+
+create or replace function public.replace_setup_role_permissions(
+  p_role_id bigint,
+  p_permission_ids bigint[]
+)
+returns void
+language plpgsql
+security definer
+set search_path = pg_catalog, public, pg_temp
+as $$
+declare
+  v_permission_ids bigint[];
+begin
+  select array_agg(distinct permission_id order by permission_id)
+  into v_permission_ids
+  from unnest(coalesce(p_permission_ids, '{}'::bigint[])) as permissions(permission_id);
+
+  if not exists (select 1 from public.roles where id = p_role_id) then
+    raise exception 'Role does not exist';
+  end if;
+
+  if coalesce(cardinality(v_permission_ids), 0) <> (
+    select count(*) from public.permissions where id = any(coalesce(v_permission_ids, '{}'::bigint[]))
+  ) then
+    raise exception 'Permissions do not exist';
+  end if;
+
+  delete from public.role_permissions where role_id = p_role_id;
+
+  insert into public.role_permissions (role_id, permission_id)
+  select p_role_id, permission_id
+  from unnest(coalesce(v_permission_ids, '{}'::bigint[])) as permissions(permission_id);
+end;
+$$;
+
+revoke all on function public.replace_setup_user_roles(uuid, bigint[], uuid) from public;
+revoke all on function public.replace_setup_user_roles(uuid, bigint[], uuid) from anon;
+revoke all on function public.replace_setup_user_roles(uuid, bigint[], uuid) from authenticated;
+grant execute on function public.replace_setup_user_roles(uuid, bigint[], uuid) to service_role;
+revoke all on function public.replace_setup_role_permissions(bigint, bigint[]) from public;
+revoke all on function public.replace_setup_role_permissions(bigint, bigint[]) from anon;
+revoke all on function public.replace_setup_role_permissions(bigint, bigint[]) from authenticated;
+grant execute on function public.replace_setup_role_permissions(bigint, bigint[]) to service_role;
+
+create table public.religions (
+  id bigint generated by default as identity primary key,
+  name text not null,
+  description text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_by uuid references public.users (id),
+  updated_by uuid references public.users (id)
+);
+
+create table public.marital_statuses (
+  id bigint generated by default as identity primary key,
+  name text not null,
+  description text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_by uuid references public.users (id),
+  updated_by uuid references public.users (id)
+);
+
+create table public.diplomas (
+  id bigint generated by default as identity primary key,
+  name text not null,
+  description text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_by uuid references public.users (id),
+  updated_by uuid references public.users (id)
+);
+
+create table public.governorates (
+  id bigint generated by default as identity primary key,
+  name text not null,
+  description text,
+  participates_in_comprehensive_health_insurance boolean not null default false,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_by uuid references public.users (id),
+  updated_by uuid references public.users (id)
+);
+
+create table public.departments (
+  id bigint generated by default as identity primary key,
+  name text not null,
+  description text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_by uuid references public.users (id),
+  updated_by uuid references public.users (id)
+);
+
+create table public.shift_types (
+  id bigint generated by default as identity primary key,
+  name text not null,
+  description text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_by uuid references public.users (id),
+  updated_by uuid references public.users (id)
+);
+
+create table public.teams (
+  id bigint generated by default as identity primary key,
+  name text not null,
+  description text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_by uuid references public.users (id),
+  updated_by uuid references public.users (id)
+);
+
+create table public.positions (
+  id bigint generated by default as identity primary key,
+  position_code text not null unique,
+  name text not null,
+  description text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_by uuid references public.users (id),
+  updated_by uuid references public.users (id)
+);
+
+create table public.projects (
+  id bigint generated by default as identity primary key,
+  name text not null,
+  description text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_by uuid references public.users (id),
+  updated_by uuid references public.users (id)
+);
+
+create table public.banks (
+  id bigint generated by default as identity primary key,
+  name text not null,
+  description text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_by uuid references public.users (id),
+  updated_by uuid references public.users (id)
+);
+
+create table public.leaving_reasons (
+  id bigint generated by default as identity primary key,
+  name text not null,
+  description text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_by uuid references public.users (id),
+  updated_by uuid references public.users (id)
+);
+
+create table public.license_types (
+  id bigint generated by default as identity primary key,
+  name text not null,
+  description text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_by uuid references public.users (id),
+  updated_by uuid references public.users (id)
+);
+
+create table public.insurance_settings (
+  setting_key text primary key,
+  category text not null,
+  value numeric(8, 4) not null check (value >= 0),
+  unit text not null check (unit in ('months', 'percent')),
+  description text not null,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_by uuid references public.users (id),
+  updated_by uuid references public.users (id),
+  check (
+    (setting_key in ('medical_insurance_eligibility_months', 'life_insurance_eligibility_months') and unit = 'months')
+    or (
+      setting_key in (
+        'comprehensive_health_employee_deduction_percent',
+        'comprehensive_health_non_working_wife_deduction_percent',
+        'comprehensive_health_child_deduction_percent'
+      )
+      and unit = 'percent'
+    )
+  )
+);
+
+insert into public.insurance_settings (setting_key, category, value, unit, description)
+values
+  ('medical_insurance_eligibility_months', 'medical', 6, 'months', 'Months after Date of Joining before medical insurance eligibility'),
+  ('life_insurance_eligibility_months', 'life', 0, 'months', 'Months after Date of Joining before life insurance eligibility'),
+  ('comprehensive_health_employee_deduction_percent', 'comprehensive_health', 1, 'percent', 'Base employee comprehensive health insurance deduction percentage'),
+  ('comprehensive_health_non_working_wife_deduction_percent', 'comprehensive_health', 3, 'percent', 'Comprehensive health insurance deduction percentage per non-working wife'),
+  ('comprehensive_health_child_deduction_percent', 'comprehensive_health', 1, 'percent', 'Comprehensive health insurance deduction percentage per child')
+on conflict (setting_key) do nothing;
+
+create unique index religions_active_name_key on public.religions (lower(name)) where is_active;
+create unique index marital_statuses_active_name_key on public.marital_statuses (lower(name)) where is_active;
+create unique index diplomas_active_name_key on public.diplomas (lower(name)) where is_active;
+create unique index governorates_active_name_key on public.governorates (lower(name)) where is_active;
+create unique index departments_active_name_key on public.departments (lower(name)) where is_active;
+create unique index shift_types_active_name_key on public.shift_types (lower(name)) where is_active;
+create unique index teams_active_name_key on public.teams (lower(name)) where is_active;
+create unique index positions_active_name_key on public.positions (lower(name)) where is_active;
+create unique index projects_active_name_key on public.projects (lower(name)) where is_active;
+create unique index banks_active_name_key on public.banks (lower(name)) where is_active;
+create unique index leaving_reasons_active_name_key on public.leaving_reasons (lower(name)) where is_active;
+create unique index license_types_active_name_key on public.license_types (lower(name)) where is_active;
+create index insurance_settings_category_idx on public.insurance_settings (category);
+
+do $$
+declare
+  v_table text;
+begin
+  foreach v_table in array array[
+    'religions', 'marital_statuses', 'diplomas', 'governorates', 'departments', 'shift_types',
+    'teams', 'positions', 'projects', 'banks', 'leaving_reasons', 'license_types'
+  ]
+  loop
+    execute format('alter table public.%I add constraint %I check (nullif(btrim(name), '''') is not null)', v_table, v_table || '_name_not_blank');
+  end loop;
+end;
+$$;
+
+alter table public.positions
+add constraint positions_position_code_not_blank check (nullif(btrim(position_code), '') is not null);
+
+create or replace function public.prevent_setup_master_data_delete()
+returns trigger
+language plpgsql
+as $$
+begin
+  raise exception 'SetUp master data cannot be deleted; deactivate it instead';
+end;
+$$;
+
+create or replace function public.prevent_super_admin_deactivation()
+returns trigger
+language plpgsql
+as $$
+begin
+  if old.is_super_admin = true and new.is_active = false then
+    raise exception 'A Super Admin cannot be deactivated';
+  end if;
+
+  return new;
+end;
+$$;
+
+create trigger users_prevent_super_admin_deactivation
+before update on public.users
+for each row
+execute function public.prevent_super_admin_deactivation();
+
+do $$
+declare
+  v_table text;
+begin
+  foreach v_table in array array[
+    'religions', 'marital_statuses', 'diplomas', 'governorates', 'departments', 'shift_types',
+    'teams', 'positions', 'projects', 'banks', 'leaving_reasons', 'license_types'
+  ]
+  loop
+    execute format('create trigger %I before update on public.%I for each row execute function public.set_updated_at()', v_table || '_set_updated_at', v_table);
+    execute format('create trigger %I before delete on public.%I for each row execute function public.prevent_setup_master_data_delete()', v_table || '_prevent_delete', v_table);
+    execute format('create index %I on public.%I (created_by)', v_table || '_created_by_idx', v_table);
+    execute format('create index %I on public.%I (updated_by)', v_table || '_updated_by_idx', v_table);
+  end loop;
+end;
+$$;
+
+create trigger insurance_settings_set_updated_at
+before update on public.insurance_settings
+for each row
+execute function public.set_updated_at();
+
+create index insurance_settings_created_by_idx on public.insurance_settings (created_by);
+create index insurance_settings_updated_by_idx on public.insurance_settings (updated_by);
+
+alter table public.users enable row level security;
+alter table public.roles enable row level security;
+alter table public.permissions enable row level security;
+alter table public.role_permissions enable row level security;
+alter table public.user_roles enable row level security;
+alter table public.user_permissions enable row level security;
+alter table public.religions enable row level security;
+alter table public.marital_statuses enable row level security;
+alter table public.diplomas enable row level security;
+alter table public.governorates enable row level security;
+alter table public.departments enable row level security;
+alter table public.shift_types enable row level security;
+alter table public.teams enable row level security;
+alter table public.positions enable row level security;
+alter table public.projects enable row level security;
+alter table public.banks enable row level security;
+alter table public.leaving_reasons enable row level security;
+alter table public.license_types enable row level security;
+alter table public.insurance_settings enable row level security;
+
+revoke all on all tables in schema public from anon, authenticated;
