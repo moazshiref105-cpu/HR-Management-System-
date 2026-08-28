@@ -25,6 +25,7 @@ import logo from "../assets/images/jushi-logo.png";
 import { authConfigured, supabase } from "./auth";
 import { employeesApi, setupApi } from "./api";
 import { EmployeeDetail, EmployeeForm, EmployeesList } from "./Employees";
+import { Dashboard } from "./Dashboard";
 
 const groups = [
   {
@@ -278,7 +279,7 @@ function Sidebar({ session, page, setPage, logout, open, close }) {
             </div>
           </div>
           <nav>
-            <button className="nav-item secondary-nav" aria-disabled="true">
+            <button className={`nav-item ${page === "dashboard" ? "selected" : ""}`} onClick={() => { setPage("dashboard"); close(); }}>
               <LayoutDashboard size={17} />
               <span>Dashboard</span>
             </button>
@@ -1245,7 +1246,7 @@ function Home({ go }) {
 }
 
 function AppShell({ session, onLogout }) {
-  const [page, setPage] = useState("home"),
+  const [page, setPage] = useState(() => (location.hash.slice(1).split("?")[0]) || "home"),
     [nav, setNav] = useState(false),
     [toast, setToast] = useState(null),
     [capabilities, setCapabilities] = useState([]);
@@ -1254,14 +1255,16 @@ function AppShell({ session, onLogout }) {
     setupApi.capabilities(session.access_token).then(setCapabilities).catch(() => setCapabilities([]));
   }, [session.access_token]);
   useEffect(() => {
-    const onHash = () => setPage(location.hash.slice(1) || "home");
+    const onHash = () => setPage((location.hash.slice(1).split("?")[0]) || "home");
     addEventListener("hashchange", onHash);
     return () => removeEventListener("hashchange", onHash);
   }, []);
   const go = (id) => (location.hash = id);
   const employeeParts = page.split("/");
   let content =
-    page === "employees" ? (
+    page === "dashboard" ? (
+      <Dashboard token={session.access_token} go={go} />
+    ) : page === "employees" ? (
       <EmployeesList token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
     ) : page === "employees/new" ? (
       <EmployeeForm token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
@@ -1295,7 +1298,7 @@ function AppShell({ session, onLogout }) {
       />
       <main className="main-content">
         <header className="topbar">
-          <span>{page.startsWith("employees") ? "Employees" : "SetUp"}</span>
+          <span>{page === "dashboard" ? "Dashboard" : page.startsWith("employees") ? "Employees" : "SetUp"}</span>
           <div className="top-avatar">{initials(session.user.email)}</div>
         </header>
         {content}

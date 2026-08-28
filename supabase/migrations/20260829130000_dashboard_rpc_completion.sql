@@ -1,0 +1,62 @@
+-- Complete, server-side Dashboard analytics. Request values are only used as literals
+-- after whitelist validation; SQL identifiers are never accepted from callers.
+create or replace function public.dashboard_metric_where(p_metric text, p_from date default null, p_to date default null)
+returns text language plpgsql stable as $$
+declare f text:=coalesce(p_from::text,'0001-01-01'); t text:=coalesce(p_to::text,'9999-12-31');
+begin return case p_metric
+ when 'total_employees' then 'true'
+ when 'active_employees' then 'e.employee_status = ''active'''
+ when 'resigned_employees' then format('e.employee_status = ''resigned'' and e.leaving_date between %L and %L',f,t)
+ when 'inactive_employees' then 'e.employee_status = ''inactive'''
+ when 'new_hires' then format('e.joining_date between %L and %L',f,t)
+ when 'five_percent' then 'e.employee_classification = ''five_percent'''
+ when 'missing_form_1' then 'nullif(btrim(e.form_1_incoming_number),'''') is null'
+ when 'missing_form_6' then 'e.employee_status <> ''active'' and nullif(btrim(e.form_6_incoming_number),'''') is null'
+ when 'missing_bank' then 'e.bank_id is null'
+ when 'contracts_expiring' then format('e.contract_expiration_date between %L and %L',coalesce(p_from,current_date)::text,(coalesce(p_to,current_date + 30))::text)
+ when 'contracts_expired' then 'e.contract_expiration_date < current_date'
+ when 'in_probation' then 'e.joining_date <= current_date and e.probation_due_date >= current_date'
+ when 'probation_due' then format('e.probation_due_date between %L and %L',coalesce(p_from,current_date)::text,(coalesce(p_to,current_date + 30))::text)
+ when 'identity_expiring' then format('e.identity_card_expiration_date between %L and %L',coalesce(p_from,current_date)::text,(coalesce(p_to,current_date + 30))::text)
+ when 'identity_expired' then 'e.identity_card_expiration_date < current_date'
+ when 'licenses_expiring' then format('exists (select 1 from public.employee_licenses lx where lx.employee_id=e.id and lx.expiry_date between %L and %L)',coalesce(p_from,current_date)::text,(coalesce(p_to,current_date + 30))::text)
+ when 'licenses_expired' then 'exists (select 1 from public.employee_licenses lx where lx.employee_id=e.id and lx.expiry_date < current_date)'
+ when 'open_notifications' then 'exists (select 1 from public.employee_notifications n where n.employee_id=e.id and n.status = ''open'')'
+ when 'due_soon' then 'exists (select 1 from public.employee_notifications n where n.employee_id=e.id and n.status = ''open'' and n.due_date between current_date and current_date + 30)'
+ when 'overdue' then 'exists (select 1 from public.employee_notifications n where n.employee_id=e.id and n.status = ''open'' and n.due_date < current_date)'
+ when 'medical_eligible' then format('(e.joining_date + make_interval(months => coalesce((select value::int from public.insurance_settings where setting_key=''medical_insurance_eligibility_months'' and is_active),0)))::date <= current_date')
+ when 'medical_not_yet_eligible' then format('(e.joining_date + make_interval(months => coalesce((select value::int from public.insurance_settings where setting_key=''medical_insurance_eligibility_months'' and is_active),0)))::date > current_date')
+ when 'life_eligible' then '(e.joining_date + make_interval(months => coalesce((select value::int from public.insurance_settings where setting_key=''life_insurance_eligibility_months'' and is_active),0)))::date <= current_date'
+ when 'comprehensive_health_participating' then 'g.participates_in_comprehensive_health_insurance is true'
+ else null end;
+end $$;
+
+create or replace function public.dashboard_filter_where(p_filters jsonb default '{}'::jsonb)
+returns text language plpgsql immutable as $$
+declare k text; v text; out_where text:='true'; map jsonb:=jsonb_build_object('department_id','e.department_id','team_id','e.team_id','position_id','e.position_id','project_id','e.project_id','governorate_id','e.governorate_id','leaving_reason_id','e.leaving_reason_id','shift_type_id','e.shift_type_id','bank_id','e.bank_id','gender','e.gender','employee_status','e.employee_status','employee_classification','e.employee_classification','marital_status_id','e.marital_status_id','religion_id','e.religion_id','diploma_id','e.diploma_id');
+begin foreach k in array jsonb_object_keys(map) loop v:=nullif(p_filters->>k,''); if v is not null then out_where:=out_where||format(' and %s = %L',map->>k,v); end if; end loop; v:=nullif(p_filters->>'search',''); if v is not null then out_where:=out_where||format(' and (e.employee_number::text ilike %L or e.english_full_name ilike %L or e.arabic_full_name ilike %L)','%'||v||'%','%'||v||'%','%'||v||'%'); end if; return out_where; end $$;
+
+drop function if exists public.dashboard_analysis(text,text,jsonb);
+create or replace function public.dashboard_analysis(p_metric text,p_dimension text,p_filters jsonb default '{}'::jsonb)
+returns table(key text,label text,count bigint,filter_key text) language plpgsql security definer set search_path=pg_catalog,public,pg_temp as $$
+declare expr text; pred text; fw text; f date:=nullif(p_filters->>'from','')::date; t date:=nullif(p_filters->>'to','')::date;
+begin expr:=case p_dimension when 'department' then 'coalesce(d.id::text,''none'')||''|''||coalesce(d.name,''Unassigned'')' when 'team' then 'coalesce(tm.id::text,''none'')||''|''||coalesce(tm.name,''Unassigned'')' when 'position' then 'coalesce(po.id::text,''none'')||''|''||coalesce(po.name,''Unassigned'')' when 'project' then 'coalesce(pr.id::text,''none'')||''|''||coalesce(pr.name,''Unassigned'')' when 'governorate' then 'coalesce(g.id::text,''none'')||''|''||coalesce(g.name,''Unassigned'')' when 'leaving_reason' then 'coalesce(lr.id::text,''none'')||''|''||coalesce(lr.name,''Unassigned'')' when 'employee_status' then 'e.employee_status||''|''||e.employee_status' when 'gender' then 'e.gender||''|''||e.gender' when 'marital_status' then 'coalesce(ms.id::text,''none'')||''|''||coalesce(ms.name,''Unassigned'')' when 'religion' then 'coalesce(re.id::text,''none'')||''|''||coalesce(re.name,''Unassigned'')' when 'diploma' then 'coalesce(di.id::text,''none'')||''|''||coalesce(di.name,''Unassigned'')' when 'classification' then 'e.employee_classification||''|''||e.employee_classification' when 'shift_type' then 'coalesce(st.id::text,''none'')||''|''||coalesce(st.name,''Unassigned'')' when 'bank' then 'coalesce(b.id::text,''none'')||''|''||coalesce(b.name,''Unassigned'')' when 'comprehensive_health_participation' then 'case when g.participates_in_comprehensive_health_insurance then ''participating|Participating'' else ''not_participating|Not participating'' end' end; if expr is null then raise exception 'Unsupported dashboard dimension'; end if; pred:=public.dashboard_metric_where(p_metric,f,t); if pred is null then raise exception 'Unsupported dashboard metric'; end if; fw:=public.dashboard_filter_where(p_filters); return query execute format('select split_part(x,''|'',1),split_part(x,''|'',2),count(*)::bigint,%L from (select %s x from public.employees e left join public.departments d on d.id=e.department_id left join public.teams tm on tm.id=e.team_id left join public.positions po on po.id=e.position_id left join public.projects pr on pr.id=e.project_id left join public.governorates g on g.id=e.governorate_id left join public.leaving_reasons lr on lr.id=e.leaving_reason_id left join public.marital_statuses ms on ms.id=e.marital_status_id left join public.religions re on re.id=e.religion_id left join public.diplomas di on di.id=e.diploma_id left join public.shift_types st on st.id=e.shift_type_id left join public.banks b on b.id=e.bank_id where (%s) and (%s)) q group by 1,2 order by 3 desc,2',p_dimension,expr,pred,fw) ; end $$;
+grant execute on function public.dashboard_analysis(text,text,jsonb) to service_role;
+
+create or replace function public.dashboard_employees(p_metric text,p_filters jsonb default '{}'::jsonb,p_page int default 1,p_page_size int default 25)
+returns jsonb language plpgsql security definer set search_path=pg_catalog,public,pg_temp as $$
+declare pred text; fw text; total bigint; rows jsonb; f date:=nullif(p_filters->>'from','')::date; t date:=nullif(p_filters->>'to','')::date; size int:=least(greatest(p_page_size,1),100); off int:=greatest(p_page-1,0)*size;
+begin pred:=public.dashboard_metric_where(p_metric,f,t); if pred is null then raise exception 'Unsupported dashboard metric'; end if; fw:=public.dashboard_filter_where(p_filters); execute format('select count(*) from public.employees e left join public.governorates g on g.id=e.governorate_id where (%s) and (%s)',pred,fw) into total; execute format('select coalesce(jsonb_agg(to_jsonb(x)),''[]''::jsonb) from (select e.id,e.employee_number,e.arabic_full_name,e.english_full_name,e.employee_status,e.department_id,d.name department_name,e.position_id,po.name position_name,e.team_id,tm.name team_name,e.project_id,pr.name project_name,e.joining_date,e.leaving_date,e.leaving_reason_id,lr.name leaving_reason,e.contract_signing_date,e.contract_expiration_date,e.probation_due_date,e.identity_card_expiration_date,e.form_1_incoming_number,(e.contract_signing_date + interval ''1 month'')::date form_1_deadline from public.employees e left join public.departments d on d.id=e.department_id left join public.positions po on po.id=e.position_id left join public.teams tm on tm.id=e.team_id left join public.projects pr on pr.id=e.project_id left join public.leaving_reasons lr on lr.id=e.leaving_reason_id left join public.governorates g on g.id=e.governorate_id where (%s) and (%s) order by e.employee_number limit %s offset %s)x',pred,fw,size,off) into rows; return jsonb_build_object('rows',rows,'total',total,'page',greatest(p_page,1),'page_size',size,'total_pages',ceil(total::numeric/size)); end $$;
+grant execute on function public.dashboard_employees(text,jsonb,int,int) to service_role;
+
+create or replace function public.dashboard_trend(p_metric text,p_from date,p_to date,p_granularity text default 'month',p_filters jsonb default '{}'::jsonb)
+returns table(period text,count bigint) language plpgsql security definer set search_path=pg_catalog,public,pg_temp as $$
+declare expr text; pred text; fw text;
+begin if p_metric not in ('new_hires','resigned_employees') then raise exception 'Unsupported trend metric'; end if; if p_granularity not in ('day','month','quarter','year') then raise exception 'Unsupported trend granularity'; end if; expr:=case when p_metric='new_hires' then 'e.joining_date' else 'e.leaving_date' end; pred:=public.dashboard_metric_where(p_metric,p_from,p_to); fw:=public.dashboard_filter_where(p_filters); return query execute format('select to_char(date_trunc(%L,%s)::date,%L),count(*)::bigint from public.employees e where (%s) and (%s) group by 1 order by 1',p_granularity,expr,case p_granularity when 'day' then 'YYYY-MM-DD' when 'month' then 'YYYY-MM' when 'quarter' then 'YYYY-"Q"Q' else 'YYYY' end,pred,fw); end $$;
+grant execute on function public.dashboard_trend(text,date,date,text,jsonb) to service_role;
+
+create or replace function public.dashboard_attention(p_filters jsonb default '{}'::jsonb)
+returns table(metric text,label text,count bigint,severity text,recommended_filters jsonb) language plpgsql security definer set search_path=pg_catalog,public,pg_temp as $$
+declare m text; pred text; fw text; c bigint; metrics text[]:=array['missing_form_1','missing_form_6','identity_expiring','contracts_expiring','licenses_expiring','medical_eligible','life_eligible','open_notifications','due_soon','overdue']; labels text[]:=array['Missing Form 1','Missing Form 6','Identity expiring','Contracts expiring','Licenses expiring','Medical eligibility reached','Life eligibility reached','Open notifications','Due soon','Overdue'];
+begin fw:=public.dashboard_filter_where(p_filters); for i in 1..array_length(metrics,1) loop m:=metrics[i]; pred:=public.dashboard_metric_where(m,nullif(p_filters->>'from','')::date,nullif(p_filters->>'to','')::date); execute format('select count(*) from public.employees e left join public.governorates g on g.id=e.governorate_id where (%s) and (%s)',pred,fw) into c; metric:=m; label:=labels[i]; count:=c; severity:=case when m in ('overdue','missing_form_1','missing_form_6') then 'warning' else 'info' end; recommended_filters:=jsonb_build_object('metric',m); return next; end loop; end $$;
+grant execute on function public.dashboard_attention(jsonb) to service_role;

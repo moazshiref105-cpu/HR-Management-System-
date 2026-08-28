@@ -46,3 +46,13 @@ export const employeesApi = {
   renewContract: (id, body, t) => api(`/api/employees/${id}/contract-renewals`, t, { method: 'POST', body: JSON.stringify(body) }),
   refreshEmployeeNotifications: (id, t) => api(`/api/employees/${id}/notifications`, t, { method: 'POST' }),
 }
+
+export const dashboardApi = {
+  summary: (params, t) => api(`/api/dashboard/summary?${new URLSearchParams(params)}`, t),
+  analysis: (params, t) => api(`/api/dashboard/analysis?${new URLSearchParams(params)}`, t),
+  employees: (params, t) => api(`/api/dashboard/employees?${new URLSearchParams(params)}`, t),
+  attention: (params, t) => api(`/api/dashboard/attention?${new URLSearchParams(params)}`, t),
+  dimensions: (t) => api('/api/dashboard/dimensions', t),
+  options: (t) => api('/api/dashboard/options', t),
+  trend: (params, t) => api(`/api/dashboard/trend?${new URLSearchParams(params)}`, t),
+}
