@@ -29,8 +29,8 @@ import { Dashboard } from "./Dashboard";
 
 const groups = [
   {
-    title: "User Management",
-    text: "Control access and role permissions.",
+    title: "Access & Security",
+    text: "Manage who can access HMS and what they can do.",
     items: [
       ["users", "Users"],
       ["roles", "Roles & Permissions"],
@@ -38,27 +38,30 @@ const groups = [
   },
   {
     title: "Organization",
-    text: "Shape how teams and work are organized.",
+    text: "Set up the company structure used in employee records.",
     items: [
       ["departments", "Departments"],
       ["teams", "Teams"],
       ["positions", "Positions"],
       ["projects", "Projects"],
-      ["shift-types", "Shift Types"],
+      ["governorates", "Governorates"],
     ],
   },
   {
-    title: "Employee Master Data",
-    text: "Keep employee records consistent.",
+    title: "Employee Data",
+    text: "Keep employee details accurate and consistent.",
     items: [
       ["religions", "Religions"],
       ["marital-statuses", "Marital Statuses"],
       ["diplomas", "Diplomas"],
-      ["governorates", "Governorates"],
-      ["banks", "Banks"],
       ["leaving-reasons", "Leaving Reasons"],
       ["license-types", "License Types"],
     ],
+  },
+  {
+    title: "Work Configuration",
+    text: "Manage work patterns and payment destinations.",
+    items: [["shift-types", "Shift Types"], ["banks", "Banks"]],
   },
   {
     title: "Insurance Settings",
@@ -95,10 +98,10 @@ const itemIcons = {
 };
 const landingSections = [
   {
-    title: "User Management",
+    title: "Access & Security",
     items: [
       ["users", "Users", "Manage accounts and role assignments"],
-      ["roles", "Roles & Permissions", "Configure access across the system"],
+      ["roles", "Roles & Permissions", "Manage what each role can access"],
     ],
   },
   {
@@ -108,21 +111,29 @@ const landingSections = [
       ["teams", "Teams"],
       ["positions", "Positions"],
       ["projects", "Projects"],
-      ["shift-types", "Shift Types"],
-      ["insurance", "Insurance Settings"],
+      ["governorates", "Governorates"],
     ],
   },
   {
-    title: "Employee Master Data",
+    title: "Employee Data",
     items: [
       ["religions", "Religions"],
       ["marital-statuses", "Marital Statuses"],
       ["diplomas", "Diplomas"],
-      ["governorates", "Governorates"],
-      ["banks", "Banks"],
       ["leaving-reasons", "Leaving Reasons"],
       ["license-types", "License Types"],
     ],
+  },
+  {
+    title: "Work Configuration",
+    items: [
+      ["shift-types", "Shift Types", "Manage working patterns"],
+      ["banks", "Banks", "Manage bank options for employees"],
+    ],
+  },
+  {
+    title: "Insurance",
+    items: [["insurance", "Insurance Settings", "Manage eligibility and health settings"]],
   },
 ];
 
@@ -294,7 +305,7 @@ function Sidebar({ session, page, setPage, logout, isOpen, onOpen, close }) {
               <span>Employees</span>
             </button>
             <button
-              className={`nav-item ${!page.startsWith("employees") ? "selected" : ""}`}
+              className={`nav-item ${page !== "dashboard" && !page.startsWith("employees") ? "selected" : ""}`}
               onClick={() => {
                 setPage("home");
                 close();
@@ -439,7 +450,7 @@ function MasterData({ resource, token, toast }) {
         <div>
           <SetupBreadcrumb group={masterGroup} current={titleCase(resource)} />
           <h1>{titleCase(resource)}</h1>
-          <p>Manage the records used across the HR system.</p>
+          <p>Manage the options HR teams use when creating and updating employee records.</p>
         </div>
         <button className="primary" onClick={() => setEditor({})}>
           + Add {titleCase(resource).replace(/s$/, "")}
@@ -451,7 +462,7 @@ function MasterData({ resource, token, toast }) {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder={`Search ${titleCase(resource).toLowerCase()}`}
+            placeholder={`Search ${titleCase(resource).toLowerCase()}...`}
           />
         </label>
         <select
@@ -1206,10 +1217,9 @@ function Home({ go }) {
         <ChevronRight size={13} />
         <strong>SetUp</strong>
       </nav>
-      <p className="eyebrow">CONTROL CENTER</p>
       <h1>SetUp</h1>
       <p className="intro">
-        Configure access, organization and employee reference data.
+        Manage HR configuration and access settings.
       </p>
       <div className="setup-layout">
         <div className="setup-sections">

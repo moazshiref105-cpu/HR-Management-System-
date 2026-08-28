@@ -127,6 +127,7 @@ export function Dashboard({ token, go }) {
   const [data, setData] = useState(emptyDashboardData);
   const [historyReady, setHistoryReady] = useState(false);
   const [showMoreFilters, setShowMoreFilters] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [coreLoading, setCoreLoading] = useState(true);
   const [secondaryLoading, setSecondaryLoading] = useState(false);
   const [secondaryMetric, setSecondaryMetric] = useState(null);
@@ -176,7 +177,7 @@ export function Dashboard({ token, go }) {
   }, [token]);
 
   useEffect(() => {
-    if (!showMoreFilters || lookupLoaded.current) return;
+    if (lookupLoaded.current) return;
     lookupLoaded.current = true;
     dashboardApi
       .filterOptions(token)
@@ -351,6 +352,7 @@ export function Dashboard({ token, go }) {
   const chips = Object.entries(query).filter(
     ([key]) => !["metric", "dimension", "from", "to"].includes(key),
   );
+  const filterLabel = (key) => filterFields[key]?.label || dimensions[key] || key.replaceAll("_", " ");
   const employeeRows = data.employees.rows || [];
   const chart = (title, items, clickable = true) => (
     <section className={`analytics-card mini-chart${secondaryLoading && (items || []).length ? " is-refreshing" : ""}`}>
@@ -380,13 +382,13 @@ export function Dashboard({ token, go }) {
     <section className="section-view dashboard-view">
       <div className="dashboard-hero">
         <div>
-          <p className="eyebrow">LIVE HR INTELLIGENCE</p>
-          <h1>Workforce analytics</h1>
-          <p>Explore the people and events behind every HR decision.</p>
+          <p className="eyebrow">HR OVERVIEW</p>
+          <h1>Dashboard</h1>
+          <p>Workforce overview and HR actions requiring attention.</p>
         </div>
         <button className="secondary" onClick={clearDrill}>
           <X size={15} />
-          Clear drill-down
+          Clear Selection
         </button>
       </div>
       <div className="analytics-path">
@@ -406,8 +408,35 @@ export function Dashboard({ token, go }) {
       </div>
       <div className="dashboard-filters">
         <Filter size={17} />
+        <div className="quick-ranges dashboard-period">
+          <span>Period</span>
+          <button onClick={() => chooseRange("month")}>This Month</button>
+          <button onClick={() => chooseRange("last_month")}>Last Month</button>
+          <button onClick={() => chooseRange("quarter")}>This Quarter</button>
+          <button onClick={() => chooseRange("year")}>This Year</button>
+        </div>
         <label>
-          Metric
+          Department
+          <select value={state.department_id} onChange={(event) => update("department_id", event.target.value)}>
+            <option value="">All departments</option>
+            {(lookups.departments || []).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
+        </label>
+        <label>
+          Search
+          <span className="input-with-icon">
+            <Search size={14} />
+            <input
+              value={state.search}
+              placeholder="Search employee ID or name..."
+              onChange={(event) => update("search", event.target.value)}
+            />
+          </span>
+        </label>
+        <button className="secondary more-filters-toggle" onClick={() => setShowAdvanced((visible) => !visible)}>{showAdvanced ? "Hide" : "Advanced"} Analysis</button>
+        {showAdvanced && <>
+        <label>
+          Analyze
           <select
             value={state.metric}
             onChange={(event) => update("metric", event.target.value)}
@@ -420,7 +449,7 @@ export function Dashboard({ token, go }) {
           </select>
         </label>
         <label>
-          Group by
+          View by
           <select
             value={state.dimension}
             onChange={(event) => update("dimension", event.target.value)}
@@ -432,13 +461,6 @@ export function Dashboard({ token, go }) {
             ))}
           </select>
         </label>
-        <div className="quick-ranges">
-          <button onClick={() => chooseRange("month")}>This Month</button>
-          <button onClick={() => chooseRange("last_month")}>Last Month</button>
-          <button onClick={() => chooseRange("quarter")}>This Quarter</button>
-          <button onClick={() => chooseRange("year")}>This Year</button>
-          <button onClick={() => chooseRange("last_year")}>Last Year</button>
-        </div>
         <label>
           From
           <input
@@ -455,19 +477,10 @@ export function Dashboard({ token, go }) {
             onChange={(event) => update("to", event.target.value)}
           />
         </label>
-        <label>
-          Search
-          <span className="input-with-icon">
-            <Search size={14} />
-            <input
-              value={state.search}
-              placeholder="ID or name"
-              onChange={(event) => update("search", event.target.value)}
-            />
-          </span>
-        </label>
+        <button className="secondary" onClick={() => chooseRange("last_year")}>Last Year</button>
+        </>}
         <button className="secondary more-filters-toggle" onClick={() => setShowMoreFilters((visible) => !visible)}>{showMoreFilters ? "Hide" : "More"} Filters</button>
-        {showMoreFilters && Object.entries(filterFields).filter(([key]) => key !== "bank_id" || dimensionList.includes("bank")).map(([key, field]) => (
+        {showMoreFilters && Object.entries(filterFields).filter(([key]) => key !== "department_id" && (key !== "bank_id" || dimensionList.includes("bank"))).map(([key, field]) => (
           <label key={key}>
             {field.label}
             <select
@@ -505,7 +518,7 @@ export function Dashboard({ token, go }) {
         )}
         {chips.map(([key, value]) => (
           <button key={key} onClick={() => update(key, "")}>
-            {key.replaceAll("_", " ")}: {value}
+            {filterLabel(key)}: {value}
             <X size={12} />
           </button>
         ))}
@@ -514,6 +527,11 @@ export function Dashboard({ token, go }) {
             Clear all
           </button>
         )}
+      </div>
+      <div className="dashboard-presets" aria-label="Common HR views">
+        {[['active_employees', 'Workforce Overview'], ['new_hires', 'New Hires'], ['resigned_employees', 'Resignations'], ['contracts_expiring', 'Contracts & Expirations'], ['missing_form_1', 'Missing HR Documents'], ['medical_eligible', 'Insurance Eligibility']].filter(([metric]) => metricList.includes(metric)).map(([metric, label]) => (
+          <button key={metric} className={state.metric === metric ? "selected" : ""} onClick={() => setState((current) => ({ ...current, metric, dimension: "department", drill: [], page: 1 }))}>{label}</button>
+        ))}
       </div>
       <div className="dashboard-kpis">
         {(data.summary.cards || []).map((card) => (
@@ -547,7 +565,7 @@ export function Dashboard({ token, go }) {
         <section className={`analytics-card primary-chart${coreRefreshing ? " is-refreshing" : ""}`}>
           <header>
             <div>
-              <p className="eyebrow">PRIMARY ANALYSIS</p>
+              <p className="eyebrow">WORKFORCE VIEW</p>
               <h2>
                 {labels[displayedMetric] || displayedMetric} by{" "}
                 {dimensions[displayedDimension] || displayedDimension}
@@ -579,7 +597,7 @@ export function Dashboard({ token, go }) {
                 </button>
               ))
             ) : (
-              <p className="muted">{coreLoading ? "Loading analysis…" : "No matching data in this context."}</p>
+              <p className="muted">{coreLoading ? "Loading results…" : "No employees match this selection. Try changing the period or filters."}</p>
             )}
           </div>
         </section>
@@ -649,8 +667,8 @@ export function Dashboard({ token, go }) {
       <section className={`analytics-card employee-drill${coreRefreshing ? " is-refreshing" : ""}`}>
         <header>
           <div>
-            <p className="eyebrow">EMPLOYEE DRILL-THROUGH</p>
-            <h2>{!hasCoreData && coreLoading ? "Loading employees…" : `${data.employees.total} employees behind this analysis`}</h2>
+            <p className="eyebrow">EMPLOYEES</p>
+            <h2>{!hasCoreData && coreLoading ? "Loading employees…" : `${data.employees.total} employees in this view`}</h2>
             {coreRefreshing && <span className="dashboard-updating">Updating results…</span>}
           </div>
         </header>
