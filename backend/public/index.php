@@ -15,10 +15,12 @@ spl_autoload_register(static function (string $class): void {
 });
 
 use Hms\Backend\SetupApi;
+use Hms\Backend\EmployeeApi;
 use Hms\Backend\HttpException;
 
 try {
-    $api = SetupApi::fromEnvironment();
+    $path = trim((string) parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH), '/');
+    $api = str_starts_with($path, 'api/employees') ? EmployeeApi::fromEnvironment() : SetupApi::fromEnvironment();
     $api->dispatch($_SERVER['REQUEST_METHOD'] ?? 'GET', $_SERVER['REQUEST_URI'] ?? '/');
 } catch (Throwable $exception) {
     $status = $exception instanceof HttpException ? $exception->status : ($exception instanceof RuntimeException ? 400 : 500);
