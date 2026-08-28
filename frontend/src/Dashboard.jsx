@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BarChart3, ChevronRight, Filter, Search, X } from "lucide-react";
-import { dashboardApi, setupApi } from "./api";
+import { dashboardApi } from "./api";
 
 const labels = {
   total_employees: "Total Employees",
@@ -45,33 +45,22 @@ const dimensions = {
   bank: "Bank",
   comprehensive_health_participation: "Health Participation",
 };
-let bankAllowed = true;
-const filterFields = new Proxy(
-  {
-    department_id: ["department", "Department"],
-    team_id: ["team", "Team"],
-    position_id: ["position", "Position"],
-    project_id: ["project", "Project"],
-    governorate_id: ["governorate", "Governorate"],
-    gender: ["gender", "Gender"],
-    employee_status: ["employee_status", "Employee Status"],
-    employee_classification: ["classification", "Employee Classification"],
-    marital_status_id: ["marital_status", "Marital Status"],
-    religion_id: ["religion", "Religion"],
-    diploma_id: ["diploma", "Diploma"],
-    leaving_reason_id: ["leaving_reason", "Leaving Reason"],
-    shift_type_id: ["shift_type", "Shift Type"],
-    bank_id: ["bank", "Bank"],
-  },
-  {
-    ownKeys: (target) =>
-      bankAllowed
-        ? Reflect.ownKeys(target)
-        : Reflect.ownKeys(target).filter((key) => key !== "bank_id"),
-    getOwnPropertyDescriptor: (target, key) =>
-      Object.getOwnPropertyDescriptor(target, key),
-  },
-);
+const filterFields = {
+  department_id: { resource: "departments", label: "Department" },
+  team_id: { resource: "teams", label: "Team" },
+  position_id: { resource: "positions", label: "Position" },
+  project_id: { resource: "projects", label: "Project" },
+  governorate_id: { resource: "governorates", label: "Governorate" },
+  gender: { resource: null, label: "Gender", controlled: true },
+  employee_status: { resource: null, label: "Employee Status", controlled: true },
+  employee_classification: { resource: null, label: "Employee Classification", controlled: true },
+  marital_status_id: { resource: "marital-statuses", label: "Marital Status" },
+  religion_id: { resource: "religions", label: "Religion" },
+  diploma_id: { resource: "diplomas", label: "Diploma" },
+  leaving_reason_id: { resource: "leaving-reasons", label: "Leaving Reason" },
+  shift_type_id: { resource: "shift-types", label: "Shift Type" },
+  bank_id: { resource: "banks", label: "Bank" },
+};
 const fallbackMetrics = [
   "total_employees",
   "active_employees",
@@ -83,6 +72,12 @@ const fallbackMetrics = [
   "identity_expiring",
   "identity_expired",
 ];
+const emptyDashboardData = {
+  summary: { cards: [] },
+  analysis: { data: [] },
+  employees: { rows: [], total: 0, total_pages: 0 },
+  attention: { items: [] },
+};
 const date = (value) =>
   value
     ? new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" }).format(
@@ -129,9 +124,15 @@ export function Dashboard({ token, go }) {
     dimensions: Object.keys(dimensions),
   });
   const [lookups, setLookups] = useState({});
-  const [data, setData] = useState(null);
+  const [data, setData] = useState(emptyDashboardData);
   const [historyReady, setHistoryReady] = useState(false);
   const [showMoreFilters, setShowMoreFilters] = useState(false);
+  const [coreLoading, setCoreLoading] = useState(true);
+  const [secondaryLoading, setSecondaryLoading] = useState(false);
+  const [secondaryMetric, setSecondaryMetric] = useState(null);
+  const [loadError, setLoadError] = useState("");
+  const lookupLoaded = useRef(false);
+  const requestId = useRef(0);
   const drill = state.drill || [];
   const query = useMemo(
     () =>
@@ -147,48 +148,21 @@ export function Dashboard({ token, go }) {
     dashboardApi
       .options(token)
       .then((next) => {
-        bankAllowed = (next.dimensions || []).includes("bank");
         setOptions(next);
-        setState((current) => ({
-          ...current,
-          metric: (next.metrics || []).includes(current.metric)
+        setLookups((current) => ({ ...current, ...(next.filter_options || {}) }));
+        setState((current) => {
+          const metric = (next.metrics || []).includes(current.metric)
             ? current.metric
-            : (next.metrics || [])[0] || "active_employees",
-          dimension: (next.dimensions || []).includes(current.dimension)
+            : (next.metrics || [])[0] || "active_employees";
+          const dimension = (next.dimensions || []).includes(current.dimension)
             ? current.dimension
-            : (next.dimensions || [])[0] || "department",
-          bank_id: bankAllowed ? current.bank_id : "",
-          page: 1,
-        }));
+            : (next.dimensions || [])[0] || "department";
+          const bank_id = (next.dimensions || []).includes("bank") ? current.bank_id : "";
+          if (metric === current.metric && dimension === current.dimension && bank_id === current.bank_id) return current;
+          return { ...current, metric, dimension, bank_id, page: 1 };
+        });
       })
       .catch(() => {});
-    Promise.all(Object.values(filterFields).map(([, resource]) => resource))
-      .then(() =>
-        Promise.all(
-          [
-            "departments",
-            "teams",
-            "positions",
-            "projects",
-            "governorates",
-            "genders",
-            "employee_statuses",
-            "employee_classifications",
-            "marital_statuses",
-            "religions",
-            "diplomas",
-            "leaving_reasons",
-            "shift_types",
-            "banks",
-          ].map((resource) =>
-            setupApi
-              .master(resource, token)
-              .then((value) => [resource, value])
-              .catch(() => [resource, []]),
-          ),
-        ),
-      )
-      .then((entries) => setLookups(Object.fromEntries(entries)));
     const onPop = () => {
       if (location.hash.startsWith("#dashboard")) setState(parseHash());
     };
@@ -200,6 +174,15 @@ export function Dashboard({ token, go }) {
       removeEventListener("hashchange", onPop);
     };
   }, [token]);
+
+  useEffect(() => {
+    if (!showMoreFilters || lookupLoaded.current) return;
+    lookupLoaded.current = true;
+    dashboardApi
+      .filterOptions(token)
+      .then((next) => setLookups((current) => ({ ...current, ...next })))
+      .catch(() => { lookupLoaded.current = false; });
+  }, [showMoreFilters, token]);
 
   useEffect(() => {
     if (!historyReady || !location.hash.startsWith("#dashboard")) return;
@@ -218,81 +201,36 @@ export function Dashboard({ token, go }) {
 
   useEffect(() => {
     if (!historyReady) return;
-    Promise.all([
-      dashboardApi.summary(query, token),
-      dashboardApi.analysis({ ...query, dimension: state.dimension }, token),
-      dashboardApi.employees(
-        { ...query, page: state.page || 1, page_size: 10 },
-        token,
-      ),
-      dashboardApi.attention(query, token),
-      state.metric === "new_hires" || state.metric === "resigned_employees"
-        ? dashboardApi.trend({ ...query, metric: state.metric }, token)
-        : Promise.resolve({ data: [] }),
-      dashboardApi
-        .trend({ ...query, metric: "new_hires" }, token)
-        .catch(() => ({ data: [] })),
-      dashboardApi
-        .trend({ ...query, metric: "resigned_employees" }, token)
-        .catch(() => ({ data: [] })),
-      dashboardApi.analysis(
-        { ...query, metric: "active_employees", dimension: "employee_status" },
-        token,
-      ),
-      dashboardApi.analysis(
-        { ...query, metric: "active_employees", dimension: "gender" },
-        token,
-      ),
-      dashboardApi.analysis(
-        { ...query, metric: state.metric, dimension: "department" },
-        token,
-      ),
-      dashboardApi.analysis(
-        { ...query, metric: state.metric, dimension: "position" },
-        token,
-      ),
-      dashboardApi.analysis(
-        { ...query, metric: state.metric, dimension: "leaving_reason" },
-        token,
-      ),
-      dashboardApi.analysis(
-        { ...query, metric: state.metric, dimension: "project" },
-        token,
-      ),
-    ])
-      .then(
-        ([
-          summary,
-          analysis,
-          employees,
-          attention,
-          trend,
-          newHireTrend,
-          resignTrend,
-          status,
-          gender,
-          department,
-          position,
-          leavingReason,
-          project,
-        ]) =>
-          setData({
-            summary,
-            analysis,
-            employees,
-            attention,
-            trend,
-            newHireTrend,
-            resignTrend,
-            status,
-            gender,
-            department,
-            position,
-            leavingReason,
-            project,
-          }),
-      )
-      .catch(() => setData({ error: true }));
+    const id = ++requestId.current;
+    const params = { ...query, dimension: state.dimension, page: state.page || 1, page_size: 10 };
+    setCoreLoading(true);
+    setSecondaryLoading(true);
+    setLoadError("");
+    dashboardApi
+      .overview(params, token)
+      .then((core) => {
+        if (id !== requestId.current) return;
+        setData((current) => ({ ...current, ...core }));
+        setCoreLoading(false);
+        return dashboardApi.secondary(params, token)
+          .then((secondary) => {
+            if (id === requestId.current) {
+              setData((current) => ({ ...current, ...secondary }));
+              setSecondaryMetric(params.metric);
+            }
+          })
+          .catch(() => {});
+      })
+      .catch(() => {
+        if (id === requestId.current) {
+          setCoreLoading(false);
+          setSecondaryLoading(false);
+          setLoadError("Dashboard data could not be loaded.");
+        }
+      })
+      .finally(() => {
+        if (id === requestId.current) setSecondaryLoading(false);
+      });
   }, [
     token,
     JSON.stringify(query),
@@ -405,35 +343,26 @@ export function Dashboard({ token, go }) {
     ...(data?.analysis?.data || []).map((row) => row.count),
     1,
   );
-  if (!data)
-    return (
-      <section className="section-view">
-        <div className="loading-list">
-          <div className="skeleton" />
-          <div className="skeleton" />
-        </div>
-      </section>
-    );
-  if (data.error)
-    return (
-      <section className="section-view">
-        <p className="employee-notice danger">
-          Dashboard data could not be loaded.
-        </p>
-      </section>
-    );
+  const hasCoreData = (data.summary.cards || []).length > 0;
+  const coreRefreshing = coreLoading && hasCoreData;
+  const displayedMetric = data.analysis?.metric || state.metric;
+  const displayedDimension = data.analysis?.dimension || state.dimension;
+  const displayedSecondaryMetric = secondaryMetric || displayedMetric;
   const chips = Object.entries(query).filter(
     ([key]) => !["metric", "dimension", "from", "to"].includes(key),
   );
   const employeeRows = data.employees.rows || [];
   const chart = (title, items, clickable = true) => (
-    <section className="analytics-card mini-chart">
-      <p className="eyebrow">{title}</p>
-      <div className="mini-bars">
+    <section className={`analytics-card mini-chart${secondaryLoading && (items || []).length ? " is-refreshing" : ""}`}>
+      <div className="mini-chart-head">
+        <p className="eyebrow">{title}</p>
+        {secondaryLoading && (items || []).length > 0 && <span className="dashboard-updating">Updating…</span>}
+      </div>
+      {secondaryLoading && !(items || []).length ? <p className="muted">Loading breakdown…</p> : <div className="mini-bars">
         {(items || []).slice(0, 8).map((item) => (
           <button
             key={`${item.key}-${item.label}`}
-            onClick={() => clickable && drillInto(item)}
+            onClick={clickable && !secondaryLoading ? () => drillInto(item) : undefined}
           >
             <span
               style={{
@@ -444,7 +373,7 @@ export function Dashboard({ token, go }) {
             <strong>{item.count}</strong>
           </button>
         ))}
-      </div>
+      </div>}
     </section>
   );
   return (
@@ -538,15 +467,15 @@ export function Dashboard({ token, go }) {
           </span>
         </label>
         <button className="secondary more-filters-toggle" onClick={() => setShowMoreFilters((visible) => !visible)}>{showMoreFilters ? "Hide" : "More"} Filters</button>
-        {showMoreFilters && Object.entries(filterFields).filter(([key]) => key !== "bank_id" || dimensionList.includes("bank")).map(([key, [resource, label]]) => (
+        {showMoreFilters && Object.entries(filterFields).filter(([key]) => key !== "bank_id" || dimensionList.includes("bank")).map(([key, field]) => (
           <label key={key}>
-            {label}
+            {field.label}
             <select
               value={state[key]}
               onChange={(event) => update(key, event.target.value)}
             >
-              <option value="">All {label.toLowerCase()}s</option>
-              {(lookups[`${resource}s`] || lookups[resource] || []).map(
+              <option value="">All {field.label.toLowerCase()}s</option>
+              {(lookups[field.resource || key] || []).map(
                 (item) => (
                   <option
                     key={item.id || item.value}
@@ -560,6 +489,7 @@ export function Dashboard({ token, go }) {
           </label>
         ))}
       </div>
+      {loadError && <p className="employee-notice danger">{loadError}</p>}
       <div className="filter-chips">
         {state.from && (
           <button onClick={() => update("from", "")}>
@@ -614,16 +544,19 @@ export function Dashboard({ token, go }) {
         </label>
       )}
       <div className="dashboard-grid">
-        <section className="analytics-card primary-chart">
+        <section className={`analytics-card primary-chart${coreRefreshing ? " is-refreshing" : ""}`}>
           <header>
             <div>
               <p className="eyebrow">PRIMARY ANALYSIS</p>
               <h2>
-                {labels[state.metric] || state.metric} by{" "}
-                {dimensions[state.dimension] || state.dimension}
+                {labels[displayedMetric] || displayedMetric} by{" "}
+                {dimensions[displayedDimension] || displayedDimension}
               </h2>
             </div>
-            <BarChart3 />
+            <div className="dashboard-card-actions">
+              {coreRefreshing && <span className="dashboard-updating">Updating analysis…</span>}
+              <BarChart3 />
+            </div>
           </header>
           <div className="bar-chart">
             {(data.analysis.data || []).length ? (
@@ -631,7 +564,7 @@ export function Dashboard({ token, go }) {
                 <button
                   className="chart-bar"
                   key={`${item.key}-${item.label}`}
-                  onClick={() => drillInto(item)}
+                  onClick={!coreLoading ? () => drillInto(item) : undefined}
                   aria-label={`Drill into ${item.label}, ${item.count}`}
                 >
                   <span className="bar-value">{item.count}</span>
@@ -646,17 +579,19 @@ export function Dashboard({ token, go }) {
                 </button>
               ))
             ) : (
-              <p className="muted">No matching data in this context.</p>
+              <p className="muted">{coreLoading ? "Loading analysis…" : "No matching data in this context."}</p>
             )}
           </div>
         </section>
-        <section className="analytics-card attention">
+        <section className={`analytics-card attention${coreRefreshing ? " is-refreshing" : ""}`}>
           <header>
             <div>
               <p className="eyebrow">HR ATTENTION</p>
               <h2>Actionable signals</h2>
             </div>
           </header>
+          {coreLoading && !(data.attention.items || []).length && <p className="muted">Loading attention signals…</p>}
+          {coreRefreshing && <span className="dashboard-updating">Updating…</span>}
           {(data.attention.items || []).map((item) => (
             <button
               key={item.metric}
@@ -669,14 +604,14 @@ export function Dashboard({ token, go }) {
         </section>
       </div>
       <div className="secondary-analytics">
-        {state.metric === "resigned_employees" ? (
+        {displayedSecondaryMetric === "resigned_employees" ? (
           <>
             {chart("Employee status distribution", data.status?.data, false)}
             {chart("Resignations by leaving reason", data.leavingReason?.data)}
             {chart("Resignations by position", data.position?.data)}
             {chart("Top departments", data.department?.data)}
           </>
-        ) : state.metric === "new_hires" ? (
+        ) : displayedSecondaryMetric === "new_hires" ? (
           <>
             {chart("Employee status distribution", data.status?.data, false)}
             {chart("New hires by position", data.position?.data)}
@@ -691,13 +626,12 @@ export function Dashboard({ token, go }) {
           </>
         )}
       </div>
-      {(data.trend?.data?.length > 0 ||
-        data.newHireTrend?.data?.length > 0) && (
+      {(data.newHireTrend?.data?.length > 0 || data.resignTrend?.data?.length > 0) && (
         <section className="analytics-card trend-card">
           <p className="eyebrow">WORKFORCE MOVEMENT</p>
           <h2>New hires vs resignations</h2>
           <div className="trend-list">
-            {(data.newHireTrend?.data || data.trend?.data || []).map(
+            {(data.newHireTrend?.data || []).map(
               (item, index) => (
                 <span key={item.period}>
                   <b>{item.period}</b>
@@ -712,11 +646,12 @@ export function Dashboard({ token, go }) {
           </div>
         </section>
       )}
-      <section className="analytics-card employee-drill">
+      <section className={`analytics-card employee-drill${coreRefreshing ? " is-refreshing" : ""}`}>
         <header>
           <div>
             <p className="eyebrow">EMPLOYEE DRILL-THROUGH</p>
-            <h2>{data.employees.total} employees behind this analysis</h2>
+            <h2>{!hasCoreData && coreLoading ? "Loading employees…" : `${data.employees.total} employees behind this analysis`}</h2>
+            {coreRefreshing && <span className="dashboard-updating">Updating results…</span>}
           </div>
         </header>
         <div className="employee-table-wrap">
@@ -730,16 +665,16 @@ export function Dashboard({ token, go }) {
                 <th>Department</th>
                 <th>Position</th>
                 <th>
-                  {state.metric === "new_hires"
+                  {displayedMetric === "new_hires"
                     ? "Joining Date"
-                    : state.metric === "resigned_employees"
+                    : displayedMetric === "resigned_employees"
                       ? "Leaving Date"
-                      : state.metric === "missing_form_1"
+                      : displayedMetric === "missing_form_1"
                         ? "Contract Signing"
                         : "Expiration"}
                 </th>
                 <th> </th>
-                {state.metric === "missing_form_1" && (
+                {displayedMetric === "missing_form_1" && (
                   <>
                     <th>Form 1 Deadline</th>
                     <th>Deadline Status</th>
@@ -760,16 +695,16 @@ export function Dashboard({ token, go }) {
                   <td>{row.position_name || "—"}</td>
                   <td>
                     {date(
-                      state.metric === "new_hires"
+                      displayedMetric === "new_hires"
                         ? row.joining_date
-                        : state.metric === "resigned_employees"
+                        : displayedMetric === "resigned_employees"
                           ? row.leaving_date
-                          : state.metric === "missing_form_1"
+                          : displayedMetric === "missing_form_1"
                             ? row.contract_signing_date
                             : row.contract_expiration_date,
                     )}
                   </td>
-                  {state.metric === "missing_form_1" && (
+                  {displayedMetric === "missing_form_1" && (
                     <>
                       <td>{date(row.form_1_deadline)}</td>
                       <td>

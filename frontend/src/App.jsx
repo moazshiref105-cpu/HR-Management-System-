@@ -258,18 +258,18 @@ function Login({ onSession }) {
   );
 }
 
-function Sidebar({ session, page, setPage, logout, open, close }) {
+function Sidebar({ session, page, setPage, logout, isOpen, onOpen, close }) {
   const user = session.user;
   return (
     <>
       <button
         className="menu-button"
-        onClick={open}
+        onClick={onOpen}
         aria-label="Open navigation"
       >
         ☰
       </button>
-      <aside className={`sidebar ${open ? "open" : ""}`}>
+      <aside className={`sidebar ${isOpen ? "open" : ""}`}>
         <div className="sidebar-top">
           <div className="brand-lockup">
             <img src={logo} alt="JUSHI" className="brand" />
@@ -321,7 +321,7 @@ function Sidebar({ session, page, setPage, logout, open, close }) {
           <p className="signature">By Moaz Shiref</p>
         </div>
       </aside>
-      {open && (
+      {isOpen && (
         <button
           className="scrim"
           aria-label="Close navigation"
@@ -1293,7 +1293,8 @@ function AppShell({ session, onLogout }) {
           location.hash = p;
         }}
         logout={onLogout}
-        open={nav}
+        isOpen={nav}
+        onOpen={() => setNav(true)}
         close={() => setNav(false)}
       />
       <main className="main-content">

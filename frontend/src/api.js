@@ -1,4 +1,13 @@
 const BASE = import.meta.env.VITE_API_BASE_URL || ''
+const MASTER_RESOURCES = new Set([
+  'religions', 'marital-statuses', 'diplomas', 'governorates', 'departments',
+  'shift-types', 'teams', 'positions', 'projects', 'banks', 'leaving-reasons',
+  'license-types',
+])
+const masterPath = (resource) => {
+  if (!MASTER_RESOURCES.has(resource)) throw new Error('Unknown master-data resource.')
+  return `/api/setup/master-data/${resource}`
+}
 
 export async function api(path, token, options = {}) {
   const response = await fetch(`${BASE}${path}`, {
@@ -13,7 +22,7 @@ export async function api(path, token, options = {}) {
 export const setupApi = {
   users: (t) => api('/api/setup/users', t), roles: (t) => api('/api/setup/roles', t), permissions: (t) => api('/api/setup/permissions', t),
   capabilities: (t) => api('/api/setup/capabilities', t),
-  master: (resource, t) => api(`/api/setup/master-data/${resource}`, t), insurance: (t) => api('/api/setup/insurance-settings', t),
+  master: (resource, t) => api(masterPath(resource), t), insurance: (t) => api('/api/setup/insurance-settings', t),
   createUser: (body, t) => api('/api/setup/users', t, { method: 'POST', body: JSON.stringify(body) }),
   patchUser: (id, body, t) => api(`/api/setup/users/${id}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
   userStatus: (id, is_active, t) => api(`/api/setup/users/${id}/status`, t, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
@@ -22,9 +31,9 @@ export const setupApi = {
   patchRole: (id, body, t) => api(`/api/setup/roles/${id}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
   roleStatus: (id, is_active, t) => api(`/api/setup/roles/${id}/status`, t, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
   rolePermissions: (id, permission_ids, t) => api(`/api/setup/roles/${id}/permissions`, t, { method: 'PUT', body: JSON.stringify({ permission_ids }) }),
-  createMaster: (resource, body, t) => api(`/api/setup/master-data/${resource}`, t, { method: 'POST', body: JSON.stringify(body) }),
-  patchMaster: (resource, id, body, t) => api(`/api/setup/master-data/${resource}/${id}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
-  masterStatus: (resource, id, is_active, t) => api(`/api/setup/master-data/${resource}/${id}/status`, t, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
+  createMaster: (resource, body, t) => api(masterPath(resource), t, { method: 'POST', body: JSON.stringify(body) }),
+  patchMaster: (resource, id, body, t) => api(`${masterPath(resource)}/${id}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
+  masterStatus: (resource, id, is_active, t) => api(`${masterPath(resource)}/${id}/status`, t, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
   patchInsurance: (key, body, t) => api(`/api/setup/insurance-settings/${key}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
 }
 
@@ -48,6 +57,9 @@ export const employeesApi = {
 }
 
 export const dashboardApi = {
+  overview: (params, t) => api(`/api/dashboard/overview?${new URLSearchParams(params)}`, t),
+  secondary: (params, t) => api(`/api/dashboard/secondary?${new URLSearchParams(params)}`, t),
+  filterOptions: (t) => api('/api/dashboard/filter-options', t),
   summary: (params, t) => api(`/api/dashboard/summary?${new URLSearchParams(params)}`, t),
   analysis: (params, t) => api(`/api/dashboard/analysis?${new URLSearchParams(params)}`, t),
   employees: (params, t) => api(`/api/dashboard/employees?${new URLSearchParams(params)}`, t),
