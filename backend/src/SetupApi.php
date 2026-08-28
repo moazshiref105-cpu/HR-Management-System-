@@ -47,6 +47,7 @@ final class SetupApi
             'master-data' => $this->masterData($method, array_slice($route, 1), $body, $actor),
             'insurance-settings' => $this->insuranceSettings($method, array_slice($route, 1), $body, $actor),
             'permissions' => $this->permissions($method, $route, $actor),
+            'capabilities' => $this->capabilities($method, $route, $actor),
             default => throw new HttpException('Route not found.', 404),
         };
         header('Content-Type: application/json; charset=utf-8');
@@ -192,6 +193,17 @@ final class SetupApi
     private function assertNotSuperAdmin(string $id): void { $user = $this->supabase->service('GET', '/rest/v1/users?select=is_super_admin&id=eq.' . rawurlencode($id)); if (($user[0]['is_super_admin'] ?? false) === true) throw new RuntimeException('The Super Admin cannot be deactivated.'); }
     /** @param array<string, mixed> $actor */
     private function permissions(string $method, array $route, array $actor): array { if ($method !== 'GET' || $route !== ['permissions']) throw new HttpException('Route not found.', 404); $this->allow($actor, 'roles.view'); $result = $this->supabase->service('GET', '/rest/v1/permissions?select=id,permission_key,module,action,description&order=module,action'); return is_array($result) ? $result : []; }
+
+    /** @return list<string> */
+    private function capabilities(string $method, array $route, array $actor): array
+    {
+        if ($method !== 'GET' || $route !== ['capabilities']) throw new HttpException('Route not found.', 404);
+        $permissions = $this->supabase->service('GET', '/rest/v1/permissions?select=permission_key&order=permission_key');
+        if (!is_array($permissions)) return [];
+        $keys = array_values(array_filter(array_column($permissions, 'permission_key'), 'is_string'));
+        if (($actor['is_super_admin'] ?? false) === true) return $keys;
+        return array_values(array_filter($keys, fn (string $key): bool => $this->supabase->service('POST', '/rest/v1/rpc/user_has_permission', ['p_user_id' => $actor['id'], 'p_permission_key' => $key]) === true));
+    }
     private function isUuid(string $value): bool { return preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $value) === 1; }
     /** @param array<mixed> $ids @return array<mixed> */
     private function replaceRelations(string $table, string $ownerColumn, string $ownerId, string $itemColumn, array $ids, string $actorId): array

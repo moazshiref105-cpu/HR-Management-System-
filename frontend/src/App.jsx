@@ -23,7 +23,8 @@ import {
 } from "lucide-react";
 import logo from "../assets/images/jushi-logo.png";
 import { authConfigured, supabase } from "./auth";
-import { setupApi } from "./api";
+import { employeesApi, setupApi } from "./api";
+import { EmployeeDetail, EmployeeForm, EmployeesList } from "./Employees";
 
 const groups = [
   {
@@ -281,12 +282,18 @@ function Sidebar({ session, page, setPage, logout, open, close }) {
               <LayoutDashboard size={17} />
               <span>Dashboard</span>
             </button>
-            <button className="nav-item secondary-nav" aria-disabled="true">
+            <button
+              className={`nav-item ${page.startsWith("employees") ? "selected" : ""}`}
+              onClick={() => {
+                setPage("employees");
+                close();
+              }}
+            >
               <UsersRound size={17} />
               <span>Employees</span>
             </button>
             <button
-              className={`nav-item ${page ? "selected" : ""}`}
+              className={`nav-item ${!page.startsWith("employees") ? "selected" : ""}`}
               onClick={() => {
                 setPage("home");
                 close();
@@ -1240,15 +1247,29 @@ function Home({ go }) {
 function AppShell({ session, onLogout }) {
   const [page, setPage] = useState("home"),
     [nav, setNav] = useState(false),
-    [toast, setToast] = useState(null);
+    [toast, setToast] = useState(null),
+    [capabilities, setCapabilities] = useState([]);
   const notify = (message, kind = "success") => setToast({ message, kind });
+  useEffect(() => {
+    setupApi.capabilities(session.access_token).then(setCapabilities).catch(() => setCapabilities([]));
+  }, [session.access_token]);
   useEffect(() => {
     const onHash = () => setPage(location.hash.slice(1) || "home");
     addEventListener("hashchange", onHash);
     return () => removeEventListener("hashchange", onHash);
   }, []);
   const go = (id) => (location.hash = id);
+  const employeeParts = page.split("/");
   let content =
+    page === "employees" ? (
+      <EmployeesList token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
+    ) : page === "employees/new" ? (
+      <EmployeeForm token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
+    ) : employeeParts[0] === "employees" && employeeParts[2] === "edit" ? (
+      <EmployeeEditorLoader id={employeeParts[1]} token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
+    ) : employeeParts[0] === "employees" && employeeParts[1] ? (
+      <EmployeeDetail id={employeeParts[1]} token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
+    ) :
     page === "users" ? (
       <Users token={session.access_token} toast={notify} />
     ) : page === "roles" ? (
@@ -1274,7 +1295,7 @@ function AppShell({ session, onLogout }) {
       />
       <main className="main-content">
         <header className="topbar">
-          <span>SetUp</span>
+          <span>{page.startsWith("employees") ? "Employees" : "SetUp"}</span>
           <div className="top-avatar">{initials(session.user.email)}</div>
         </header>
         {content}
@@ -1283,6 +1304,14 @@ function AppShell({ session, onLogout }) {
       <Toast toast={toast} clear={() => setToast(null)} />
     </div>
   );
+}
+
+function EmployeeEditorLoader({ id, token, toast, go, capabilities }) {
+  const [employee, setEmployee] = useState(null);
+  useEffect(() => {
+    employeesApi.getEmployee(id, token).then(setEmployee).catch((e) => toast(e.message, "error"));
+  }, [id, token]);
+  return employee ? <EmployeeForm token={token} toast={toast} go={go} employee={employee} mode="edit" capabilities={capabilities} /> : <section className="section-view"><LoadingRows /></section>;
 }
 
 export default function App() {

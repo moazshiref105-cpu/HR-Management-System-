@@ -12,6 +12,7 @@ export async function api(path, token, options = {}) {
 
 export const setupApi = {
   users: (t) => api('/api/setup/users', t), roles: (t) => api('/api/setup/roles', t), permissions: (t) => api('/api/setup/permissions', t),
+  capabilities: (t) => api('/api/setup/capabilities', t),
   master: (resource, t) => api(`/api/setup/master-data/${resource}`, t), insurance: (t) => api('/api/setup/insurance-settings', t),
   createUser: (body, t) => api('/api/setup/users', t, { method: 'POST', body: JSON.stringify(body) }),
   patchUser: (id, body, t) => api(`/api/setup/users/${id}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
@@ -25,4 +26,23 @@ export const setupApi = {
   patchMaster: (resource, id, body, t) => api(`/api/setup/master-data/${resource}/${id}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
   masterStatus: (resource, id, is_active, t) => api(`/api/setup/master-data/${resource}/${id}/status`, t, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
   patchInsurance: (key, body, t) => api(`/api/setup/insurance-settings/${key}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
+}
+
+export const employeesApi = {
+  listEmployees: (params, t) => {
+    const query = new URLSearchParams(Object.entries(params || {}).filter(([, value]) => value !== "" && value != null)).toString()
+    return api(`/api/employees${query ? `?${query}` : ""}`, t)
+  },
+  getEmployee: (id, t) => api(`/api/employees/${id}`, t),
+  createEmployee: (body, t) => api('/api/employees', t, { method: 'POST', body: JSON.stringify(body) }),
+  updateEmployee: (id, body, t) => api(`/api/employees/${id}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
+  updateEmployeeStatus: (id, body, t) => api(`/api/employees/${id}/status`, t, { method: 'PATCH', body: JSON.stringify(body) }),
+  addWife: (id, body, t) => api(`/api/employees/${id}/wives`, t, { method: 'POST', body: JSON.stringify(body) }),
+  updateWife: (id, wifeId, body, t) => api(`/api/employees/${id}/wives/${wifeId}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
+  addChild: (id, body, t) => api(`/api/employees/${id}/children`, t, { method: 'POST', body: JSON.stringify(body) }),
+  updateChild: (id, childId, body, t) => api(`/api/employees/${id}/children/${childId}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
+  addLicense: (id, body, t) => api(`/api/employees/${id}/licenses`, t, { method: 'POST', body: JSON.stringify(body) }),
+  updateLicense: (id, licenseId, body, t) => api(`/api/employees/${id}/licenses/${licenseId}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
+  renewContract: (id, body, t) => api(`/api/employees/${id}/contract-renewals`, t, { method: 'POST', body: JSON.stringify(body) }),
+  refreshEmployeeNotifications: (id, t) => api(`/api/employees/${id}/notifications`, t, { method: 'POST' }),
 }

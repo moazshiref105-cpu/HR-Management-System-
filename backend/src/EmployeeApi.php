@@ -101,7 +101,7 @@ final class EmployeeApi
             $numeric = ctype_digit($search) ? 'employee_number.eq.' . rawurlencode($search) . ',' : '';
             $filters[] = 'or=(' . $numeric . 'arabic_full_name.ilike.' . $term . ',english_full_name.ilike.' . $term . ')';
         }
-        $select = 'id,employee_number,employee_status,employee_classification,arabic_full_name,english_full_name,identity_card_expiration_date,department:departments(id,name),team:teams(id,name),position:positions(id,name,position_code),project:projects(id,name),governorate:governorates(id,name,participates_in_comprehensive_health_insurance)';
+        $select = 'id,employee_number,employee_status,employee_classification,arabic_full_name,english_full_name,joining_date,identity_card_expiration_date,department:departments(id,name),team:teams(id,name),position:positions(id,name,position_code),project:projects(id,name),governorate:governorates(id,name,participates_in_comprehensive_health_insurance)';
         $url = '/rest/v1/employees?select=' . $select . '&order=employee_number';
         if ($filters) $url .= '&' . implode('&', $filters);
         return $this->supabase->service('GET', $url);
