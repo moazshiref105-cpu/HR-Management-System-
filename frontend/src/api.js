@@ -19,10 +19,22 @@ export async function api(path, token, options = {}) {
   return payload.data
 }
 
+const inFlight = new Map()
+const dedupeInFlight = (key, request) => {
+  if (!inFlight.has(key)) {
+    inFlight.set(key, request().finally(() => inFlight.delete(key)))
+  }
+  return inFlight.get(key)
+}
+
 export const setupApi = {
   users: (t) => api('/api/setup/users', t), roles: (t) => api('/api/setup/roles', t), permissions: (t) => api('/api/setup/permissions', t),
   capabilities: (t) => api('/api/setup/capabilities', t),
-  master: (resource, t) => api(masterPath(resource), t), insurance: (t) => api('/api/setup/insurance-settings', t),
+  master: (resource, t) => {
+    const path = masterPath(resource)
+    return dedupeInFlight(`GET:${t}:${path}`, () => api(path, t))
+  }, insurance: (t) => api('/api/setup/insurance-settings', t),
+  employeeFormOptions: (t) => api('/api/setup/employee-form-options', t),
   createUser: (body, t) => api('/api/setup/users', t, { method: 'POST', body: JSON.stringify(body) }),
   patchUser: (id, body, t) => api(`/api/setup/users/${id}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
   userStatus: (id, is_active, t) => api(`/api/setup/users/${id}/status`, t, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
@@ -37,12 +49,53 @@ export const setupApi = {
   patchInsurance: (key, body, t) => api(`/api/setup/insurance-settings/${key}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
 }
 
+let employeeLookupCache = null
+let employeeLookupToken = null
+let employeeLookupPromise = null
+export const employeeLookupApi = {
+  get: (token) => {
+    if (employeeLookupToken !== token) { employeeLookupCache = null; employeeLookupToken = token; employeeLookupPromise = null }
+    if (employeeLookupCache) return Promise.resolve(employeeLookupCache)
+    if (!employeeLookupPromise) employeeLookupPromise = setupApi.employeeFormOptions(token).then((data) => (employeeLookupCache = data)).finally(() => { employeeLookupPromise = null })
+    return employeeLookupPromise
+  },
+  invalidate: () => { employeeLookupCache = null; employeeLookupPromise = null },
+}
+
+let capabilitiesCache = null
+let capabilitiesToken = null
+let capabilitiesPromise = null
+export const capabilitiesApi = {
+  get: (token) => {
+    if (capabilitiesToken !== token) {
+      capabilitiesCache = null
+      capabilitiesToken = token
+      capabilitiesPromise = null
+    }
+    if (capabilitiesCache) return Promise.resolve(capabilitiesCache)
+    if (!capabilitiesPromise) {
+      capabilitiesPromise = setupApi.capabilities(token)
+        .then((data) => (capabilitiesCache = data))
+        .finally(() => { capabilitiesPromise = null })
+    }
+    return capabilitiesPromise
+  },
+  invalidate: () => {
+    capabilitiesCache = null
+    capabilitiesPromise = null
+  },
+}
+
 export const employeesApi = {
   listEmployees: (params, t) => {
     const query = new URLSearchParams(Object.entries(params || {}).filter(([, value]) => value !== "" && value != null)).toString()
-    return api(`/api/employees${query ? `?${query}` : ""}`, t)
+    const path = `/api/employees${query ? `?${query}` : ""}`
+    return dedupeInFlight(`GET:${t}:${path}`, () => api(path, t))
   },
-  getEmployee: (id, t) => api(`/api/employees/${id}`, t),
+  getEmployee: (id, t) => {
+    const path = `/api/employees/${id}`
+    return dedupeInFlight(`GET:${t}:${path}`, () => api(path, t))
+  },
   createEmployee: (body, t) => api('/api/employees', t, { method: 'POST', body: JSON.stringify(body) }),
   updateEmployee: (id, body, t) => api(`/api/employees/${id}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
   updateEmployeeStatus: (id, body, t) => api(`/api/employees/${id}/status`, t, { method: 'PATCH', body: JSON.stringify(body) }),
@@ -65,6 +118,6 @@ export const dashboardApi = {
   employees: (params, t) => api(`/api/dashboard/employees?${new URLSearchParams(params)}`, t),
   attention: (params, t) => api(`/api/dashboard/attention?${new URLSearchParams(params)}`, t),
   dimensions: (t) => api('/api/dashboard/dimensions', t),
-  options: (t) => api('/api/dashboard/options', t),
+  options: (t) => dedupeInFlight(`GET:${t}:/api/dashboard/options`, () => api('/api/dashboard/options', t)),
   trend: (params, t) => api(`/api/dashboard/trend?${new URLSearchParams(params)}`, t),
 }

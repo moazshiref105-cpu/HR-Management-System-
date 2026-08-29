@@ -48,6 +48,7 @@ final class SetupApi
             'insurance-settings' => $this->insuranceSettings($method, array_slice($route, 1), $body, $actor),
             'permissions' => $this->permissions($method, $route, $actor),
             'capabilities' => $this->capabilities($method, $route, $actor),
+            'employee-form-options' => $this->employeeFormOptions($method, $route, $actor),
             default => throw new HttpException('Route not found.', 404),
         };
         header('Content-Type: application/json; charset=utf-8');
@@ -180,6 +181,17 @@ final class SetupApi
         if ($method === 'PATCH' && count($route) === 2) { $allowed = ['name', 'description']; if ($table === 'positions') $allowed[] = 'position_code'; if ($table === 'governorates') $allowed[] = 'participates_in_comprehensive_health_insurance'; $record = array_intersect_key($body, array_flip($allowed)); if ($record === []) throw new RuntimeException('At least one editable field is required.'); if (array_key_exists('name', $record) && trim((string) $record['name']) === '') throw new RuntimeException('name cannot be blank.'); if ($table === 'positions' && array_key_exists('position_code', $record) && trim((string) $record['position_code']) === '') throw new RuntimeException('position_code cannot be blank.'); if ($table === 'governorates' && array_key_exists('participates_in_comprehensive_health_insurance', $record) && !is_bool($record['participates_in_comprehensive_health_insurance'])) throw new RuntimeException('participates_in_comprehensive_health_insurance must be boolean.'); $record['updated_by'] = $actor['id']; return $this->supabase->service('PATCH', '/rest/v1/' . $table . '?id=eq.' . $id, $record, ['Prefer: return=representation']); }
         if ($method === 'PATCH' && ($route[2] ?? '') === 'status' && is_bool($body['is_active'] ?? null)) return $this->supabase->service('PATCH', '/rest/v1/' . $table . '?id=eq.' . $id, ['is_active' => $body['is_active'], 'updated_by' => $actor['id']], ['Prefer: return=representation']);
         throw new HttpException('Route not found.', 404);
+    }
+
+    private function employeeFormOptions(string $method, array $route, array $actor): array
+    {
+        if ($method !== 'GET' || $route !== ['employee-form-options']) throw new HttpException('Route not found.', 404);
+        $this->allow($actor, 'employees.view');
+        $resources = ['religions','marital-statuses','diplomas','governorates','departments','shift-types','teams','positions','projects','banks','leaving-reasons','license-types'];
+        $requests = [];
+        foreach ($resources as $resource) $requests[] = ['method' => 'GET', 'path' => '/rest/v1/' . self::MASTER_TABLES[$resource] . '?select=*&is_active=eq.true&order=name'];
+        $rows = $this->supabase->serviceBatch($requests);
+        return array_combine($resources, $rows) ?: [];
     }
 
     /** @param array<string, mixed> $body @param array<string, mixed> $actor */

@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import logo from "../assets/images/jushi-logo.png";
 import { authConfigured, supabase } from "./auth";
-import { employeesApi, setupApi } from "./api";
+import { capabilitiesApi, employeesApi, setupApi } from "./api";
 import { EmployeeDetail, EmployeeForm, EmployeesList } from "./Employees";
 import { Dashboard } from "./Dashboard";
 
@@ -1262,7 +1262,7 @@ function AppShell({ session, onLogout }) {
     [capabilities, setCapabilities] = useState([]);
   const notify = (message, kind = "success") => setToast({ message, kind });
   useEffect(() => {
-    setupApi.capabilities(session.access_token).then(setCapabilities).catch(() => setCapabilities([]));
+    capabilitiesApi.get(session.access_token).then(setCapabilities).catch(() => setCapabilities([]));
   }, [session.access_token]);
   useEffect(() => {
     const onHash = () => setPage((location.hash.slice(1).split("?")[0]) || "home");

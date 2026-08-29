@@ -101,7 +101,9 @@ final class EmployeeApi
             $numeric = ctype_digit($search) ? 'employee_number.eq.' . rawurlencode($search) . ',' : '';
             $filters[] = 'or=(' . $numeric . 'arabic_full_name.ilike.' . $term . ',english_full_name.ilike.' . $term . ')';
         }
-        $select = 'id,employee_number,employee_status,employee_classification,arabic_full_name,english_full_name,joining_date,identity_card_expiration_date,department:departments(id,name),team:teams(id,name),position:positions(id,name,position_code),project:projects(id,name),governorate:governorates(id,name,participates_in_comprehensive_health_insurance)';
+        // Keep the list projection aligned with the columns rendered by EmployeesList.
+        // Detail-only fields and relations belong to the detail endpoint, not every list row.
+        $select = 'id,employee_number,employee_status,arabic_full_name,english_full_name,joining_date,department:departments(id,name),position:positions(id,name,position_code)';
         $url = '/rest/v1/employees?select=' . $select . '&order=employee_number';
         if ($filters) $url .= '&' . implode('&', $filters);
         return $this->supabase->service('GET', $url);
@@ -189,7 +191,7 @@ final class EmployeeApi
     private function refresh(string $id, array $actor): array
     {
         $this->allow($actor, 'employees.view');
-        $this->supabase->service('POST', '/rest/v1/rpc/refresh_employee_notifications', ['p_employee_id' => $id]);
+        $this->refreshNotifications($id);
         return $this->supabase->service('GET', '/rest/v1/employee_notifications?employee_id=eq.' . rawurlencode($id) . '&select=*&order=due_date,reminder_threshold_days');
     }
 
@@ -197,30 +199,45 @@ final class EmployeeApi
     private function detail(string $id, array $actor): array
     {
         $this->allow($actor, 'employees.view');
-        $row = $this->employee($id);
         $personal = $this->can($actor, 'employees.personal.view');
         $work = $this->can($actor, 'employees.work.view');
         $insurance = $this->can($actor, 'employees.insurance.view');
         $financial = $this->can($actor, 'employees.financial.view');
+        $needsCalculated = $personal || $work || $insurance;
+        $requests = [
+            'employee' => ['method' => 'GET', 'path' => $this->employeeDetailPath($id, $needsCalculated, $insurance, $work)],
+        ];
+        if ($needsCalculated) {
+            $requests['settings'] = ['method' => 'GET', 'path' => '/rest/v1/insurance_settings?select=setting_key,value&is_active=eq.true'];
+        }
+        $batchRows = $this->supabase->serviceBatch(array_values($requests));
+        $batch = array_combine(array_keys($requests), $batchRows);
+        $row = $batch['employee'][0] ?? null;
+        if (!is_array($row)) throw new HttpException('Employee not found.', 404);
         $result = ['id' => $row['id'], 'employee_number' => $row['employee_number'], 'employee_status' => $row['employee_status'], 'employee_classification' => $row['employee_classification']];
         if ($personal) $result['personal'] = $this->pick($row, array_merge(self::PERSONAL, ['identity_card_expiration_date', 'religion', 'marital_status', 'diploma', 'governorate']));
         if ($work) $result['work'] = $this->pick($row, array_merge(self::WORK, ['contract_expiration_date', 'probation_due_date', 'department', 'shift_type', 'team', 'position', 'project']));
-        if ($personal) $result['family'] = ['wives' => $this->supabase->service('GET', '/rest/v1/employee_wives?employee_id=eq.' . rawurlencode($id) . '&select=*&order=id'), 'children' => $this->supabase->service('GET', '/rest/v1/employee_children?employee_id=eq.' . rawurlencode($id) . '&select=*&order=id')];
-        if ($insurance) { $result['insurance'] = $this->insurance($row, $id); $result['licenses'] = $this->supabase->service('GET', '/rest/v1/employee_licenses?employee_id=eq.' . rawurlencode($id) . '&select=*,license_type:license_types(id,name)&order=id'); $result['notifications'] = $this->refresh($id, $actor); }
+        $wives = $row['wives'] ?? [];
+        $children = $row['children'] ?? [];
+        $settings = $needsCalculated ? $this->settingsFromRows($batch['settings'] ?? []) : [];
+        $comprehensive = $needsCalculated ? $this->comprehensiveFromData($row, $settings, $wives, $children) : null;
+        if ($personal) $result['family'] = ['wives' => $wives, 'children' => $children];
+        if ($insurance) { $result['insurance'] = array_merge($this->pick($row, self::INSURANCE), ['form_1_deadline_date' => $this->addMonths((string) $row['contract_signing_date'], 1), 'comprehensive_health' => $comprehensive]); $result['licenses'] = $row['licenses'] ?? []; $result['notifications'] = $row['notifications'] ?? []; }
         if ($financial) $result['financial'] = ['bank' => $row['bank'] ?? null];
         if ($this->can($actor, 'employees.edit')) $result['leaving'] = $this->pick($row, self::LEAVING);
-        if ($work) $result['contract_history'] = $this->supabase->service('GET', '/rest/v1/employee_contract_renewals?employee_id=eq.' . rawurlencode($id) . '&select=*&order=renewal_signing_date.desc');
-        if ($personal || $work || $insurance) $result['calculated'] = $this->calculated($row, $id);
+        if ($work) $result['contract_history'] = $row['contract_history'] ?? [];
+        if ($needsCalculated) $result['calculated'] = $this->calculatedFromData($row, $settings, $comprehensive);
         return $result;
     }
 
-    /** @return array<string,mixed> */
-    private function employee(string $id): array
+    private function employeeDetailPath(string $id, bool $includeFamily, bool $includeInsurance, bool $includeWork): string
     {
         $select = '*,religion:religions(id,name),marital_status:marital_statuses(id,name),diploma:diplomas(id,name),governorate:governorates(id,name,participates_in_comprehensive_health_insurance),department:departments(id,name),shift_type:shift_types(id,name),team:teams(id,name),position:positions(id,name,position_code),project:projects(id,name),bank:banks(id,name),leaving_reason:leaving_reasons(id,name)';
-        $rows = $this->supabase->service('GET', '/rest/v1/employees?id=eq.' . rawurlencode($id) . '&select=' . $select);
-        if (!isset($rows[0]) || !is_array($rows[0])) throw new HttpException('Employee not found.', 404);
-        return $rows[0];
+        $orders = [];
+        if ($includeFamily) { $select .= ',wives:employee_wives(*),children:employee_children(*)'; $orders = array_merge($orders, ['wives.order=id', 'children.order=id']); }
+        if ($includeInsurance) { $select .= ',licenses:employee_licenses(*,license_type:license_types(id,name)),notifications:employee_notifications(*)'; $orders = array_merge($orders, ['licenses.order=id', 'notifications.order=due_date,reminder_threshold_days']); }
+        if ($includeWork) { $select .= ',contract_history:employee_contract_renewals(*)'; $orders[] = 'contract_history.order=renewal_signing_date.desc'; }
+        return '/rest/v1/employees?id=eq.' . rawurlencode($id) . '&select=' . $select . ($orders === [] ? '' : '&' . implode('&', $orders));
     }
 
     /** @param array<string,mixed> $body @param array<string,mixed> $actor @return array<string,mixed> */
@@ -264,13 +281,13 @@ final class EmployeeApi
     }
     private function assertActiveReference(string $table, int $id): void { $rows = $this->supabase->service('GET', '/rest/v1/' . $table . '?select=id&id=eq.' . $id . '&is_active=eq.true'); if (!isset($rows[0])) throw new RuntimeException("Selected {$table} record does not exist or is inactive."); }
     /** @return array<string,mixed> */
-    private function insurance(array $row, string $id): array { return array_merge($this->pick($row, self::INSURANCE), ['form_1_deadline_date' => $this->addMonths((string) $row['contract_signing_date'], 1), 'comprehensive_health' => $this->comprehensive($row, $id)]); }
-    /** @return array<string,mixed> */
-    private function calculated(array $row, string $id): array { $settings = $this->settings(); $medical = (int) $settings['medical_insurance_eligibility_months']; $life = (int) $settings['life_insurance_eligibility_months']; $today = (new DateTimeImmutable('today'))->format('Y-m-d'); return ['age' => (new DateTimeImmutable((string)$row['date_of_birth']))->diff(new DateTimeImmutable('today'))->y, 'contract_expiration_date' => $row['contract_expiration_date'], 'probation_due_date' => $row['probation_due_date'], 'position' => $row['position'] ?? null, 'medical_insurance' => ['configured_eligibility_months' => $medical, 'eligibility_date' => $this->addMonths((string)$row['joining_date'], $medical), 'is_eligible' => $this->addMonths((string)$row['joining_date'], $medical) <= $today], 'life_insurance' => ['configured_eligibility_months' => $life, 'eligibility_date' => $this->addMonths((string)$row['joining_date'], $life), 'is_eligible' => $this->addMonths((string)$row['joining_date'], $life) <= $today], 'comprehensive_health_deduction' => $this->comprehensive($row, $id)]; }
-    /** @return array<string,mixed> */
-    private function comprehensive(array $row, string $id): array { $settings = $this->settings(); $wives = $this->supabase->service('GET', '/rest/v1/employee_wives?employee_id=eq.' . rawurlencode($id) . '&select=is_working'); $children = $this->supabase->service('GET', '/rest/v1/employee_children?employee_id=eq.' . rawurlencode($id) . '&select=id'); $nonWorking = count(array_filter($wives, static fn($wife) => ($wife['is_working'] ?? false) === false)); $childCount = count($children); $participates = (bool) (($row['governorate']['participates_in_comprehensive_health_insurance'] ?? false)); $applicable = $row['gender'] === 'male' && $participates; $base = (float)$settings['comprehensive_health_employee_deduction_percent']; $wife = (float)$settings['comprehensive_health_non_working_wife_deduction_percent']; $child = (float)$settings['comprehensive_health_child_deduction_percent']; $wifeTotal = $applicable ? $nonWorking * $wife : 0.0; $childTotal = $applicable ? $childCount * $child : 0.0; return ['governorate_participates' => $participates, 'base_percent' => $base, 'non_working_wife_count' => $nonWorking, 'wife_percent_each' => $wife, 'wife_total_percent' => $wifeTotal, 'child_count' => $childCount, 'child_percent_each' => $child, 'child_total_percent' => $childTotal, 'total_percent' => $base + $wifeTotal + $childTotal]; }
-    /** @return array<string,float> */
-    private function settings(): array { $rows = $this->supabase->service('GET', '/rest/v1/insurance_settings?select=setting_key,value&is_active=eq.true'); $settings = []; foreach ($rows as $row) $settings[(string)$row['setting_key']] = (float)$row['value']; foreach (['medical_insurance_eligibility_months','life_insurance_eligibility_months','comprehensive_health_employee_deduction_percent','comprehensive_health_non_working_wife_deduction_percent','comprehensive_health_child_deduction_percent'] as $key) if (!array_key_exists($key, $settings)) throw new RuntimeException("Required insurance setting {$key} is unavailable."); return $settings; }
+    private function refreshNotifications(string $id): void { $this->supabase->service('POST', '/rest/v1/rpc/refresh_employee_notifications', ['p_employee_id' => $id]); }
+    /** @param list<array<string,mixed>> $rows @return array<string,float> */
+    private function settingsFromRows(array $rows): array { $settings = []; foreach ($rows as $row) $settings[(string)$row['setting_key']] = (float)$row['value']; foreach (['medical_insurance_eligibility_months','life_insurance_eligibility_months','comprehensive_health_employee_deduction_percent','comprehensive_health_non_working_wife_deduction_percent','comprehensive_health_child_deduction_percent'] as $key) if (!array_key_exists($key, $settings)) throw new RuntimeException("Required insurance setting {$key} is unavailable."); return $settings; }
+    /** @param array<string,mixed> $row @param array<string,float> $settings @param list<array<string,mixed>> $wives @param list<array<string,mixed>> $children @return array<string,mixed> */
+    private function comprehensiveFromData(array $row, array $settings, array $wives, array $children): array { $nonWorking = count(array_filter($wives, static fn($wife) => ($wife['is_working'] ?? false) === false)); $childCount = count($children); $participates = (bool) (($row['governorate']['participates_in_comprehensive_health_insurance'] ?? false)); $applicable = $row['gender'] === 'male' && $participates; $base = (float)$settings['comprehensive_health_employee_deduction_percent']; $wife = (float)$settings['comprehensive_health_non_working_wife_deduction_percent']; $child = (float)$settings['comprehensive_health_child_deduction_percent']; $wifeTotal = $applicable ? $nonWorking * $wife : 0.0; $childTotal = $applicable ? $childCount * $child : 0.0; return ['governorate_participates' => $participates, 'base_percent' => $base, 'non_working_wife_count' => $nonWorking, 'wife_percent_each' => $wife, 'wife_total_percent' => $wifeTotal, 'child_count' => $childCount, 'child_percent_each' => $child, 'child_total_percent' => $childTotal, 'total_percent' => $base + $wifeTotal + $childTotal]; }
+    /** @param array<string,mixed> $row @param array<string,float> $settings @param array<string,mixed> $comprehensive @return array<string,mixed> */
+    private function calculatedFromData(array $row, array $settings, array $comprehensive): array { $medical = (int) $settings['medical_insurance_eligibility_months']; $life = (int) $settings['life_insurance_eligibility_months']; $today = (new DateTimeImmutable('today'))->format('Y-m-d'); return ['age' => (new DateTimeImmutable((string)$row['date_of_birth']))->diff(new DateTimeImmutable('today'))->y, 'contract_expiration_date' => $row['contract_expiration_date'], 'probation_due_date' => $row['probation_due_date'], 'position' => $row['position'] ?? null, 'medical_insurance' => ['configured_eligibility_months' => $medical, 'eligibility_date' => $this->addMonths((string)$row['joining_date'], $medical), 'is_eligible' => $this->addMonths((string)$row['joining_date'], $medical) <= $today], 'life_insurance' => ['configured_eligibility_months' => $life, 'eligibility_date' => $this->addMonths((string)$row['joining_date'], $life), 'is_eligible' => $this->addMonths((string)$row['joining_date'], $life) <= $today], 'comprehensive_health_deduction' => $comprehensive]; }
     /** @param array<string,mixed> $row @param array<int,string> $keys @return array<string,mixed> */
     private function pick(array $row, array $keys): array { $out = []; foreach ($keys as $key) if (array_key_exists($key, $row)) $out[$key] = $row[$key]; return $out; }
     private function addMonths(string $date, int $months): string { return (new DateTimeImmutable($date))->modify('+' . $months . ' months')->format('Y-m-d'); }

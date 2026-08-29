@@ -121,7 +121,9 @@ export function Dashboard({ token, go }) {
   const [state, setState] = useState(parseHash);
   const [options, setOptions] = useState({
     metrics: fallbackMetrics,
-    dimensions: Object.keys(dimensions),
+    // Do not expose permission-gated dimensions until the backend options
+    // response authorizes them for this session.
+    dimensions: Object.keys(dimensions).filter((key) => !["bank", "comprehensive_health_participation"].includes(key)),
   });
   const [lookups, setLookups] = useState({});
   const [data, setData] = useState(emptyDashboardData);
@@ -133,6 +135,7 @@ export function Dashboard({ token, go }) {
   const [secondaryMetric, setSecondaryMetric] = useState(null);
   const [loadError, setLoadError] = useState("");
   const lookupLoaded = useRef(false);
+  const optionsLoaded = useRef(false);
   const requestId = useRef(0);
   const drill = state.drill || [];
   const query = useMemo(
@@ -146,6 +149,26 @@ export function Dashboard({ token, go }) {
   );
 
   useEffect(() => {
+    optionsLoaded.current = false;
+    lookupLoaded.current = false;
+    const onPop = () => {
+      if (location.hash.startsWith("#dashboard")) setState(parseHash());
+    };
+    addEventListener("popstate", onPop);
+    addEventListener("hashchange", onPop);
+    setHistoryReady(true);
+    return () => {
+      removeEventListener("popstate", onPop);
+      removeEventListener("hashchange", onPop);
+    };
+  }, [token]);
+
+  useEffect(() => {
+    // The overview endpoint remains authoritative for the initial default
+    // state. Delay options so its independent request cannot queue ahead of
+    // KPI data on the intentionally single-process local PHP runtime.
+    if (optionsLoaded.current || coreLoading) return;
+    optionsLoaded.current = true;
     dashboardApi
       .options(token)
       .then((next) => {
@@ -163,27 +186,20 @@ export function Dashboard({ token, go }) {
           return { ...current, metric, dimension, bank_id, page: 1 };
         });
       })
-      .catch(() => {});
-    const onPop = () => {
-      if (location.hash.startsWith("#dashboard")) setState(parseHash());
-    };
-    addEventListener("popstate", onPop);
-    addEventListener("hashchange", onPop);
-    setHistoryReady(true);
-    return () => {
-      removeEventListener("popstate", onPop);
-      removeEventListener("hashchange", onPop);
-    };
-  }, [token]);
+      .catch(() => { optionsLoaded.current = false; });
+  }, [token, coreLoading]);
 
   useEffect(() => {
-    if (lookupLoaded.current) return;
+    // Filter lookup data is auxiliary to the initial workforce view. On the
+    // single-process local API runtime, starting its ten-table bundle ahead of
+    // the overview makes the KPI request wait in the server queue.
+    if (lookupLoaded.current || (!showMoreFilters && coreLoading)) return;
     lookupLoaded.current = true;
     dashboardApi
       .filterOptions(token)
       .then((next) => setLookups((current) => ({ ...current, ...next })))
       .catch(() => { lookupLoaded.current = false; });
-  }, [showMoreFilters, token]);
+  }, [showMoreFilters, token, coreLoading]);
 
   useEffect(() => {
     if (!historyReady || !location.hash.startsWith("#dashboard")) return;
