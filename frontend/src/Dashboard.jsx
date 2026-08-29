@@ -169,6 +169,7 @@ export function Dashboard({ token, go }) {
   const [showMoreFilters, setShowMoreFilters] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showExplore, setShowExplore] = useState(false);
+  const [showTurnoverDetails, setShowTurnoverDetails] = useState(false);
   const [granularity, setGranularity] = useState(parseHash().granularity || "auto");
   const [coreLoading, setCoreLoading] = useState(true);
   const [secondaryLoading, setSecondaryLoading] = useState(false);
@@ -510,7 +511,6 @@ export function Dashboard({ token, go }) {
             />
           </span>
         </label>
-        <button className="secondary more-filters-toggle" onClick={() => setShowAdvanced((visible) => !visible)}>{showAdvanced ? "Hide" : "Advanced"} Analysis</button>
         {showAdvanced && <>
         <label>
           Analyze
@@ -580,7 +580,7 @@ export function Dashboard({ token, go }) {
         ))}
       </div>
       {loadError && <p className="employee-notice danger">{loadError}</p>}
-      <div className="filter-chips">
+      {(chips.length + (state.from ? 1 : 0) + (state.to ? 1 : 0) > 0) && <div className="active-analysis-context"><span className="context-label">Viewing</span><div className="filter-chips">
         {state.from && (
           <button onClick={() => update("from", "")}>
             {state.from}
@@ -604,14 +604,14 @@ export function Dashboard({ token, go }) {
             Clear all
           </button>
         )}
-      </div>
-      <div className="dashboard-presets" aria-label="Common HR views">
-        {[['active_employees', 'Workforce Overview'], ['new_hires', 'New Hires'], ['resigned_employees', 'Resignations'], ['contracts_expiring', 'Contracts & Expirations'], ['missing_form_1', 'Missing HR Documents'], ['medical_eligible', 'Insurance Eligibility']].filter(([metric]) => metricList.includes(metric)).map(([metric, label]) => (
+      </div></div>}
+      <div className="dashboard-presets" aria-label="Quick Views"><span className="quick-views-label">Quick Views</span>
+        {[['active_employees', 'Overview'], ['new_hires', 'Hiring'], ['resigned_employees', 'Turnover'], ['missing_form_1', 'Compliance']].filter(([metric]) => metricList.includes(metric)).map(([metric, label]) => (
           <button key={metric} className={state.metric === metric ? "selected" : ""} onClick={() => setState((current) => ({ ...current, metric, dimension: "department", drill: [], page: 1 }))}>{label}</button>
         ))}
       </div>
       <section className={`executive-dashboard${executiveLoading ? " is-loading" : ""}`}>
-        <div className="executive-heading"><div><p className="eyebrow">EXECUTIVE WORKFORCE</p><h2>Workforce health at a glance</h2><p>Connected to your period and global filters.</p></div>{executiveLoading && <span className="dashboard-updating">Updating executive insights…</span>}</div>
+        <div className="executive-heading"><div><p className="eyebrow">EXECUTIVE WORKFORCE</p><h2>Workforce health at a glance</h2><p>Click any chart segment to filter the entire Dashboard.</p></div>{executiveLoading && <span className="dashboard-updating">Updating executive insights…</span>}</div>
         <div className="executive-kpis">
           {[
             ["total_employees", "Total Employees", "Current workforce"], ["active_employees", "Active Employees", "Currently employed"], ["new_hires", "New Hires", "During selected period"], ["resigned_employees", "Resigned Employees", "During selected period"], ["turnover_rate", "Turnover Rate", "Resignations ÷ average headcount", "%"], ["in_probation", "Employees in Probation", "Current employees"],
@@ -619,14 +619,14 @@ export function Dashboard({ token, go }) {
         </div>
         <div className="executive-main-grid">
           <section className="analytics-card workforce-trend"><header><div><p className="eyebrow">WORKFORCE MOVEMENT</p><h2>Hiring vs Resignations</h2><p>Workforce movement over time.</p></div><label className="granularity-control">Granularity<select value={granularity} onChange={(event) => { setGranularity(event.target.value); setState((current) => ({ ...current, granularity: event.target.value, page: 1 })); }}>{validGranularities.map((value) => <option key={value} value={value}>{value === "auto" ? "Auto" : value[0].toUpperCase() + value.slice(1)}</option>)}</select></label></header><MovementChart items={executive.movement} onSelect={(item) => setState((current) => ({ ...current, from: item.bucket_start || current.from, to: item.bucket_end || current.to, page: 1 }))} /><div className="movement-summary"><span>Hired <b>{executive.kpis.new_hires ?? 0}</b></span><span>Resigned <b>{executive.kpis.resigned_employees ?? 0}</b></span><span>Net movement <b>{(executive.kpis.new_hires ?? 0) - (executive.kpis.resigned_employees ?? 0) >= 0 ? "+" : ""}{(executive.kpis.new_hires ?? 0) - (executive.kpis.resigned_employees ?? 0)}</b></span></div></section>
-          <section className="analytics-card turnover-summary"><p className="eyebrow">TURNOVER ANALYSIS</p><h2>{executive.kpis.turnover_rate ?? 0}% turnover</h2><p>Resignations during the selected period divided by average headcount.</p><dl><div><dt>Resignations</dt><dd>{executive.kpis.resigned_employees ?? 0}</dd></div><div><dt>Start headcount</dt><dd>{executive.kpis.start_headcount ?? 0}</dd></div><div><dt>End headcount</dt><dd>{executive.kpis.end_headcount ?? 0}</dd></div><div><dt>Average headcount</dt><dd>{executive.kpis.average_headcount ?? 0}</dd></div></dl></section>
+          <section className="analytics-card turnover-summary"><p className="eyebrow">TURNOVER ANALYSIS</p><h2>{executive.kpis.turnover_rate ?? 0}% Turnover</h2><p>Based on {executive.kpis.resigned_employees ?? 0} resignations during the selected period.</p><div className="turnover-primary-stat">Average Headcount: <strong>{executive.kpis.average_headcount ?? 0}</strong></div><button className="turnover-details-toggle" onClick={() => setShowTurnoverDetails((value) => !value)}>{showTurnoverDetails ? "Hide calculation" : "View calculation"}</button>{showTurnoverDetails && <dl className="turnover-details"><div><dt>Resignations</dt><dd>{executive.kpis.resigned_employees ?? 0}</dd></div><div><dt>Start headcount</dt><dd>{executive.kpis.start_headcount ?? 0}</dd></div><div><dt>End headcount</dt><dd>{executive.kpis.end_headcount ?? 0}</dd></div><div><dt>Average headcount</dt><dd>{executive.kpis.average_headcount ?? 0}</dd></div><small>Turnover = Resignations / Average Headcount × 100</small></dl>}</section>
         </div>
-        <div className="executive-insights-grid">
+        <div className="dashboard-section-intro"><h3>Turnover Insights</h3><p>Where are employees leaving from, and why?</p></div><div className="executive-insights-grid">
           <ExecutiveBars title="Employees by department" subtitle="WORKFORCE DISTRIBUTION" items={executive.departments} onSelect={(item) => selectExecutive(item, "department_id", "active_employees", "department")}/>
           <section className="analytics-card executive-chart"><header><div><p className="eyebrow">WHY PEOPLE LEAVE</p><h2>Top resignation reasons</h2></div></header>{executive.resignation_reasons?.length ? <DonutChart items={executive.resignation_reasons} onSelect={(item) => selectExecutive(item, "leaving_reason_id", "resigned_employees", "department")} /> : <p className="muted">No resignation reasons for this selection.</p>}</section>
           <ExecutiveBars title="Turnover by department" subtitle="TURNOVER RATE" items={executive.turnover_departments} value="turnover_rate" suffix="%" onSelect={(item) => selectExecutive(item, "department_id", "resigned_employees", "leaving_reason")}/>
         </div>
-        <CompositionCard composition={executive.composition} />
+        <div className="dashboard-section-intro"><h3>Workforce Profile</h3><p>Understand the structure of the current workforce.</p></div><CompositionCard composition={executive.composition} />
       </section>
       <section className="executive-attention analytics-card"><header><div><p className="eyebrow">HR ATTENTION</p><h2>Action required</h2></div><button className="text-button" onClick={() => setShowExplore(true)}>View All Attention</button></header><div className="attention-strip">{executive.attention.filter((item) => ["missing_form_1", "contracts_expiring", "identity_expiring", "licenses_expiring"].includes(item.metric)).slice(0, 4).map((item) => <button key={item.metric} onClick={() => update("metric", item.metric)}><span>{item.label}</span><strong>{item.count}</strong><small>{item.severity || "Review"}</small></button>)}</div></section>
       <div className="dashboard-kpis legacy-kpis">
