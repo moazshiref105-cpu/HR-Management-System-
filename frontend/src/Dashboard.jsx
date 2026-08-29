@@ -108,6 +108,7 @@ const parseHash = () => {
     dimension: params.get("dimension") || "department",
     from: params.get("from") || "",
     to: params.get("to") || "",
+    granularity: params.get("granularity") || "auto",
     search: params.get("search") || "",
     page: Number(params.get("page") || 1),
     drill,
@@ -121,6 +122,35 @@ const parseHash = () => {
 function ExecutiveBars({ title, subtitle, items = [], value = "count", suffix = "", onSelect }) {
   const max = Math.max(...items.map((item) => Number(item[value]) || 0), 1);
   return <section className="analytics-card executive-chart"><header><div><p className="eyebrow">{subtitle}</p><h2>{title}</h2></div></header>{items.length ? <div className="executive-bars">{items.slice(0, 8).map((item) => <button key={`${item.key}-${item.label}`} onClick={onSelect ? () => onSelect(item) : undefined} disabled={!onSelect}><span className="executive-bar-track"><i style={{ width: `${Math.max(6, ((Number(item[value]) || 0) / max) * 100)}%` }}/></span><b>{item.label}</b><strong>{Number(item[value]) || 0}{suffix}</strong></button>)}</div> : <p className="muted">No data is available for this selection.</p>}</section>;
+}
+
+function MovementChart({ items = [], onSelect }) {
+  const [hover, setHover] = useState(null);
+  const width = 760, height = 280, pad = { top: 24, right: 22, bottom: 42, left: 38 };
+  const max = Math.max(...items.flatMap((item) => [Number(item.new_hires) || 0, Number(item.resignations) || 0]), 1);
+  const x = (index) => pad.left + (index * (width - pad.left - pad.right)) / Math.max(items.length - 1, 1);
+  const y = (value) => height - pad.bottom - ((Number(value) || 0) / max) * (height - pad.top - pad.bottom);
+  const path = (key) => items.map((item, index) => `${index ? "L" : "M"}${x(index)},${y(item[key])}`).join(" ");
+  if (!items.length) return <p className="muted">No hiring or resignation activity for this selection.</p>;
+  return <div className="movement-visual"><div className="movement-legend"><span><i className="legend-hiring" />New Hires</span><span><i className="legend-resignation" />Resignations</span></div><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Hiring versus resignations over time" onMouseLeave={() => setHover(null)}>
+    {[0, .25, .5, .75, 1].map((step) => <line key={step} x1={pad.left} x2={width - pad.right} y1={y(max * step)} y2={y(max * step)} className="movement-grid" />)}
+    <path d={path("new_hires")} className="movement-line hiring-line" />
+    <path d={path("resignations")} className="movement-line resignation-line" />
+    {items.map((item, index) => <g key={item.period} onMouseEnter={() => setHover(item)} onClick={() => onSelect?.(item)} className="movement-point-group"><circle cx={x(index)} cy={y(item.new_hires)} r="4" className="movement-point hiring-point" /><circle cx={x(index)} cy={y(item.resignations)} r="4" className="movement-point resignation-point" /><text x={x(index)} y={height - 16} textAnchor="middle">{item.period}</text></g>)}
+  </svg>{hover && <div className="movement-tooltip"><strong>{hover.period}</strong><span>New Hires: {hover.new_hires}</span><span>Resignations: {hover.resignations}</span><span>Net Change: {(Number(hover.new_hires) || 0) - (Number(hover.resignations) || 0) >= 0 ? "+" : ""}{(Number(hover.new_hires) || 0) - (Number(hover.resignations) || 0)}</span></div>}</div>;
+}
+
+function DonutChart({ items = [], onSelect }) {
+  const total = items.reduce((sum, item) => sum + (Number(item.count) || 0), 0) || 1;
+  let offset = 0;
+  const colors = ["#e36b67", "#13a89e", "#7557d6", "#2d6cdf", "#e7a63b"];
+  return <div className="donut-wrap"><svg viewBox="0 0 120 120" aria-label="Top resignation reasons"><circle cx="60" cy="60" r="42" fill="none" stroke="#eef2f7" strokeWidth="18" />{items.slice(0, 5).map((item, index) => { const pct = (Number(item.count) || 0) / total; const dash = pct * 264; const node = <circle key={item.key || item.label} cx="60" cy="60" r="42" fill="none" stroke={colors[index % colors.length]} strokeWidth="18" strokeDasharray={`${dash} ${264 - dash}`} strokeDashoffset={-offset} transform="rotate(-90 60 60)" onClick={() => onSelect?.(item)} className="donut-segment" />; offset += dash; return node; })}</svg><div className="donut-legend">{items.slice(0, 5).map((item, index) => <button key={item.key || item.label} onClick={() => onSelect?.(item)}><i style={{ background: colors[index % colors.length] }} />{item.label}<b>{item.count}</b></button>)}</div></div>;
+}
+
+function CompositionCard({ composition = {} }) {
+  const [tab, setTab] = useState("gender");
+  const tabs = [["gender", "Gender"], ["classification", "Classification"], ["age_bands", "Age"], ["governorate", "Governorate"]];
+  return <section className="analytics-card composition-card"><header><div><p className="eyebrow">WORKFORCE COMPOSITION</p><h2>Workforce composition</h2></div></header><div className="composition-tabs">{tabs.map(([key, label]) => <button key={key} className={tab === key ? "selected" : ""} onClick={() => setTab(key)}>{label}</button>)}</div><div className="composition-content"><ExecutiveBars title="" subtitle="" items={composition[tab] || []} /></div></section>;
 }
 
 export function Dashboard({ token, go }) {
@@ -138,6 +168,8 @@ export function Dashboard({ token, go }) {
   const [historyReady, setHistoryReady] = useState(false);
   const [showMoreFilters, setShowMoreFilters] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showExplore, setShowExplore] = useState(false);
+  const [granularity, setGranularity] = useState(parseHash().granularity || "auto");
   const [coreLoading, setCoreLoading] = useState(true);
   const [secondaryLoading, setSecondaryLoading] = useState(false);
   const [secondaryMetric, setSecondaryMetric] = useState(null);
@@ -155,6 +187,10 @@ export function Dashboard({ token, go }) {
       ),
     [state],
   );
+  const rangeDays = useMemo(() => { const from = state.from ? new Date(`${state.from}T00:00:00`) : new Date(new Date().getFullYear(), new Date().getMonth() - 11, 1); const to = state.to ? new Date(`${state.to}T00:00:00`) : new Date(); return Math.max(1, Math.round((to - from) / 86400000) + 1); }, [state.from, state.to]);
+  const validGranularities = useMemo(() => { const values = ["auto"]; if (rangeDays <= 120) values.push("day", "week"); if (rangeDays > 31) values.push("month"); if (rangeDays > 120) values.push("quarter"); if (rangeDays > 548) values.push("year"); return values; }, [rangeDays]);
+  const effectiveGranularity = granularity === "auto" ? (rangeDays <= 31 ? "day" : rangeDays <= 120 ? "week" : rangeDays <= 548 ? "month" : rangeDays <= 1825 ? "quarter" : "year") : granularity;
+  useEffect(() => { if (!validGranularities.includes(granularity)) setGranularity("auto"); }, [validGranularities, granularity]);
 
   useEffect(() => {
     optionsLoaded.current = false;
@@ -270,9 +306,9 @@ export function Dashboard({ token, go }) {
     if (!historyReady) return;
     let active = true;
     setExecutiveLoading(true);
-    dashboardApi.executive(query, token).then((next) => { if (active) setExecutive(next); }).catch(() => {}).finally(() => { if (active) setExecutiveLoading(false); });
+    dashboardApi.executive({ ...query, granularity: effectiveGranularity }, token).then((next) => { if (active) setExecutive(next); }).catch(() => {}).finally(() => { if (active) setExecutiveLoading(false); });
     return () => { active = false; };
-  }, [token, JSON.stringify(query), historyReady]);
+  }, [token, JSON.stringify(query), effectiveGranularity, historyReady]);
 
   const update = (key, value) =>
     setState((current) => ({
@@ -386,7 +422,7 @@ export function Dashboard({ token, go }) {
   const displayedDimension = data.analysis?.dimension || state.dimension;
   const displayedSecondaryMetric = secondaryMetric || displayedMetric;
   const chips = Object.entries(query).filter(
-    ([key]) => !["metric", "dimension", "from", "to"].includes(key),
+    ([key]) => !["metric", "dimension", "from", "to", "granularity"].includes(key),
   );
   const filterLabel = (key) => filterFields[key]?.label || dimensions[key] || key.replaceAll("_", " ");
   const filterValueLabel = (key, value) => {
@@ -582,22 +618,18 @@ export function Dashboard({ token, go }) {
           ].map(([key, title, hint, suffix]) => <button key={key} className={state.metric === key ? "selected" : ""} onClick={() => key !== "turnover_rate" && update("metric", key)} disabled={key === "turnover_rate"}><span>{title}</span><strong>{executiveLoading && executive.kpis[key] == null ? "—" : `${executive.kpis[key] ?? 0}${suffix || ""}`}</strong><small>{hint}</small></button>)}
         </div>
         <div className="executive-main-grid">
-          <section className="analytics-card workforce-trend"><header><div><p className="eyebrow">WORKFORCE MOVEMENT</p><h2>Workforce trend</h2><p>Active workforce, hires and resignations over time.</p></div></header>{executive.movement?.length ? <div className="movement-chart">{executive.movement.map((item) => <article key={item.period}><span className="movement-active" style={{ height: `${Math.max(8, (item.active_workforce / Math.max(...executive.movement.map((row) => row.active_workforce), 1)) * 100)}%` }}/><i className="movement-hires" style={{ height: `${Math.max(4, (item.new_hires / Math.max(...executive.movement.map((row) => row.new_hires), 1)) * 100)}%` }}/><b>{item.period}</b><small>{item.active_workforce} active · {item.new_hires} hired · {item.resignations} resigned · {item.turnover_rate}% turnover</small></article>)}</div> : <p className="muted">Loading workforce movement…</p>}</section>
+          <section className="analytics-card workforce-trend"><header><div><p className="eyebrow">WORKFORCE MOVEMENT</p><h2>Hiring vs Resignations</h2><p>Workforce movement over time.</p></div><label className="granularity-control">Granularity<select value={granularity} onChange={(event) => { setGranularity(event.target.value); setState((current) => ({ ...current, granularity: event.target.value, page: 1 })); }}>{validGranularities.map((value) => <option key={value} value={value}>{value === "auto" ? "Auto" : value[0].toUpperCase() + value.slice(1)}</option>)}</select></label></header><MovementChart items={executive.movement} onSelect={(item) => setState((current) => ({ ...current, from: item.bucket_start || current.from, to: item.bucket_end || current.to, page: 1 }))} /><div className="movement-summary"><span>Hired <b>{executive.kpis.new_hires ?? 0}</b></span><span>Resigned <b>{executive.kpis.resigned_employees ?? 0}</b></span><span>Net movement <b>{(executive.kpis.new_hires ?? 0) - (executive.kpis.resigned_employees ?? 0) >= 0 ? "+" : ""}{(executive.kpis.new_hires ?? 0) - (executive.kpis.resigned_employees ?? 0)}</b></span></div></section>
           <section className="analytics-card turnover-summary"><p className="eyebrow">TURNOVER ANALYSIS</p><h2>{executive.kpis.turnover_rate ?? 0}% turnover</h2><p>Resignations during the selected period divided by average headcount.</p><dl><div><dt>Resignations</dt><dd>{executive.kpis.resigned_employees ?? 0}</dd></div><div><dt>Start headcount</dt><dd>{executive.kpis.start_headcount ?? 0}</dd></div><div><dt>End headcount</dt><dd>{executive.kpis.end_headcount ?? 0}</dd></div><div><dt>Average headcount</dt><dd>{executive.kpis.average_headcount ?? 0}</dd></div></dl></section>
         </div>
         <div className="executive-insights-grid">
           <ExecutiveBars title="Employees by department" subtitle="WORKFORCE DISTRIBUTION" items={executive.departments} onSelect={(item) => selectExecutive(item, "department_id", "active_employees", "department")}/>
-          <ExecutiveBars title="Top resignation reasons" subtitle="WHY PEOPLE LEAVE" items={executive.resignation_reasons} onSelect={(item) => selectExecutive(item, "leaving_reason_id", "resigned_employees", "department")}/>
+          <section className="analytics-card executive-chart"><header><div><p className="eyebrow">WHY PEOPLE LEAVE</p><h2>Top resignation reasons</h2></div></header>{executive.resignation_reasons?.length ? <DonutChart items={executive.resignation_reasons} onSelect={(item) => selectExecutive(item, "leaving_reason_id", "resigned_employees", "department")} /> : <p className="muted">No resignation reasons for this selection.</p>}</section>
           <ExecutiveBars title="Turnover by department" subtitle="TURNOVER RATE" items={executive.turnover_departments} value="turnover_rate" suffix="%" onSelect={(item) => selectExecutive(item, "department_id", "resigned_employees", "leaving_reason")}/>
         </div>
-        <div className="composition-grid">
-          <ExecutiveBars title="Gender" subtitle="WORKFORCE COMPOSITION" items={executive.composition?.gender} />
-          <ExecutiveBars title="Employee classification" subtitle="WORKFORCE COMPOSITION" items={executive.composition?.classification} />
-          <ExecutiveBars title="Governorates" subtitle="WORKFORCE COMPOSITION" items={executive.composition?.governorate} onSelect={(item) => selectExecutive(item, "governorate_id")}/>
-          <ExecutiveBars title="Age bands" subtitle="WORKFORCE COMPOSITION" items={executive.composition?.age_bands} />
-        </div>
+        <CompositionCard composition={executive.composition} />
       </section>
-      <div className="dashboard-kpis">
+      <section className="executive-attention analytics-card"><header><div><p className="eyebrow">HR ATTENTION</p><h2>Action required</h2></div><button className="text-button" onClick={() => setShowExplore(true)}>View All Attention</button></header><div className="attention-strip">{executive.attention.filter((item) => ["missing_form_1", "contracts_expiring", "identity_expiring", "licenses_expiring"].includes(item.metric)).slice(0, 4).map((item) => <button key={item.metric} onClick={() => update("metric", item.metric)}><span>{item.label}</span><strong>{item.count}</strong><small>{item.severity || "Review"}</small></button>)}</div></section>
+      <div className="dashboard-kpis legacy-kpis">
         {(data.summary.cards || []).map((card) => (
           <button
             key={card.metric}
@@ -625,6 +657,8 @@ export function Dashboard({ token, go }) {
           </select>
         </label>
       )}
+      <button className="advanced-analysis-toggle" onClick={() => setShowExplore((value) => !value)}><span><p className="eyebrow">EXPLORE WORKFORCE</p><strong>Advanced Analysis</strong><small>Run a custom workforce analysis</small></span><span>{showExplore ? "Hide" : "Open Advanced Analysis"}</span></button>
+      {showExplore && <>
       <div className="advanced-analysis-heading"><div><p className="eyebrow">EXPLORE WORKFORCE</p><h2>Advanced Analysis</h2><p>Use the full analytical drill-down when you need to investigate a specific workforce question.</p></div></div>
       <div className="dashboard-grid">
         <section className={`analytics-card primary-chart${coreRefreshing ? " is-refreshing" : ""}`}>
@@ -829,6 +863,7 @@ export function Dashboard({ token, go }) {
           </div>
         )}
       </section>
+      </>}
     </section>
   );
 }

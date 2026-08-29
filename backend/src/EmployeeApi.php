@@ -20,7 +20,7 @@ final class EmployeeApi
     private const PERSONAL = ['gender', 'arabic_full_name', 'english_full_name', 'identity_card_number', 'identity_card_expiration_date', 'date_of_birth', 'religion_id', 'marital_status_id', 'diploma_id', 'major', 'graduated_from', 'phone', 'governorate_id', 'address', 'employee_classification'];
     private const WORK = ['department_id', 'shift_type_id', 'team_id', 'position_id', 'project_id', 'joining_date', 'contract_signing_date'];
     private const INSURANCE = ['social_insurance_active', 'social_insurance_comment', 'form_1_incoming_number', 'form_1_incoming_date'];
-    private const FINANCIAL = ['bank_id', 'bank_account_holder_name', 'bank_account_number', 'iban', 'bank_branch'];
+    private const FINANCIAL = ['bank_id', 'bank_account_number'];
     private const LEAVING = ['employee_status', 'leaving_date', 'leaving_reason_id', 'leaving_comment', 'annual_days_settled', 'form_6_incoming_number', 'form_6_incoming_date', 'form_6_reason'];
 
     private function __construct(private readonly SupabaseClient $supabase) {}
@@ -223,7 +223,7 @@ final class EmployeeApi
         $comprehensive = $needsCalculated ? $this->comprehensiveFromData($row, $settings, $wives, $children) : null;
         if ($personal) $result['family'] = ['wives' => $wives, 'children' => $children];
         if ($insurance) { $result['insurance'] = array_merge($this->pick($row, self::INSURANCE), ['form_1_deadline_date' => $this->addMonths((string) $row['contract_signing_date'], 1), 'comprehensive_health' => $comprehensive]); $result['licenses'] = $row['licenses'] ?? []; $result['notifications'] = $row['notifications'] ?? []; }
-        if ($financial) $result['financial'] = array_merge(['bank' => $row['bank'] ?? null], $this->pick($row, ['bank_account_holder_name', 'bank_account_number', 'iban', 'bank_branch']));
+        if ($financial) $result['financial'] = array_merge(['bank' => $row['bank'] ?? null], $this->pick($row, ['bank_account_number']));
         if ($this->can($actor, 'employees.edit')) $result['leaving'] = $this->pick($row, self::LEAVING);
         if ($work) $result['contract_history'] = $row['contract_history'] ?? [];
         if ($needsCalculated) $result['calculated'] = $this->calculatedFromData($row, $settings, $comprehensive);
@@ -253,17 +253,7 @@ final class EmployeeApi
         foreach (self::REFERENCES as $column => $table) if (array_key_exists($column, $record) && $record[$column] !== null) { if (!$this->positiveId($record[$column])) throw new RuntimeException("{$column} must be a valid ID."); $this->assertActiveReference($table, (int) $record[$column]); }
         if (isset($record['gender']) && !in_array($record['gender'], ['male','female'], true)) throw new RuntimeException('gender must be male or female.');
         if (isset($record['employee_classification']) && !in_array($record['employee_classification'], ['standard','five_percent'], true)) throw new RuntimeException('employee_classification must be standard or five_percent.');
-        foreach (['bank_account_holder_name', 'bank_account_number', 'bank_branch'] as $field) {
-            if (array_key_exists($field, $record) && $record[$field] !== null) {
-                $record[$field] = trim((string) $record[$field]);
-                if ($record[$field] === '') $record[$field] = null;
-            }
-        }
-        if (array_key_exists('iban', $record) && $record['iban'] !== null) {
-            $record['iban'] = strtoupper(preg_replace('/\s+/', '', trim((string) $record['iban'])) ?? '');
-            if ($record['iban'] === '') $record['iban'] = null;
-            elseif (!preg_match('/^EG[A-Z0-9]{27}$/', $record['iban'])) throw new RuntimeException('IBAN must be a valid 29-character Egyptian IBAN beginning with EG.');
-        }
+        if (array_key_exists('bank_account_number', $record) && $record['bank_account_number'] !== null) $record['bank_account_number'] = trim((string) $record['bank_account_number']) ?: null;
         if (isset($record['contract_signing_date'], $record['joining_date']) && $record['contract_signing_date'] < $record['joining_date']) throw new RuntimeException('Contract signing date cannot be before joining date.');
         if (($record['employee_status'] ?? 'active') !== 'active' && (!$this->date($record['leaving_date'] ?? null) || !$this->positiveId($record['leaving_reason_id'] ?? null))) throw new RuntimeException('Leaving date and leaving reason are required for resigned or inactive employees.');
         if ($creating) $record['created_by'] = $actor['id'];
