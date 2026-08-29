@@ -110,6 +110,7 @@ export const employeesApi = {
 }
 
 export const dashboardApi = {
+  executive: (params, t) => api(`/api/dashboard/executive?${new URLSearchParams(params)}`, t),
   overview: (params, t) => api(`/api/dashboard/overview?${new URLSearchParams(params)}`, t),
   secondary: (params, t) => api(`/api/dashboard/secondary?${new URLSearchParams(params)}`, t),
   filterOptions: (t) => api('/api/dashboard/filter-options', t),

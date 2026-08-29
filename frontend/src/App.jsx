@@ -897,176 +897,37 @@ function UserEditor({ user, roles, token, toast, onClose, done }) {
 }
 
 function Roles({ token, toast }) {
-  const [roles, setRoles] = useState(null),
-    [perms, setPerms] = useState([]),
-    [selected, setSelected] = useState(null),
-    [busy, setBusy] = useState(false);
-  const load = async () => {
+  const [roles, setRoles] = useState(null), [perms, setPerms] = useState([]), [selected, setSelected] = useState(null), [selectedIds, setSelectedIds] = useState(new Set()), [busy, setBusy] = useState(false), [showAdvanced, setShowAdvanced] = useState(false);
+  const load = async (keepId) => {
     try {
       setRoles(null);
-      const [r, p] = await Promise.all([
-        setupApi.roles(token),
-        setupApi.permissions(token),
-      ]);
-      setRoles(r);
-      setPerms(p);
-      setSelected(r[0] || null);
-    } catch (e) {
-      setRoles([]);
-    }
+      const [nextRoles, nextPerms] = await Promise.all([setupApi.roles(token), setupApi.permissions(token)]);
+      const next = nextRoles.find((role) => role.id === keepId) || nextRoles[0] || null;
+      setRoles(nextRoles); setPerms(nextPerms); setSelected(next); setSelectedIds(new Set(next?.role_permissions?.map((item) => item.permission_id) || []));
+    } catch (e) { setRoles([]); }
   };
-  useEffect(() => {
-    load();
-  }, []);
-  const permissionIds = new Set(
-    selected?.role_permissions?.map((x) => x.permission_id) || [],
-  );
-  const grouped = perms.reduce(
-    (a, p) => ({ ...a, [p.module]: [...(a[p.module] || []), p] }),
-    {},
-  );
-  const toggle = async (id) => {
-    if (!selected) return;
-    const ids = permissionIds.has(id)
-      ? [...permissionIds].filter((x) => x !== id)
-      : [...permissionIds, id];
-    setBusy(true);
-    try {
-      await setupApi.rolePermissions(selected.id, ids, token);
-      toast("Permissions saved.", "success");
-      load();
-    } catch (e) {
-      toast(e.message, "error");
-    } finally {
-      setBusy(false);
-    }
+  useEffect(() => { load(); }, [token]);
+  const readable = (permission) => {
+    const key = permission.permission_key;
+    const map = {
+      "employees.view": ["Employees", "View Employees"], "employees.create": ["Employees", "Add Employees"], "employees.edit": ["Employees", "Edit Employees"], "employees.delete": ["Employees", "Manage Employment Status"],
+      "employees.personal.view": ["Employees · Personal Information", "View"], "employees.personal.edit": ["Employees · Personal Information", "Edit"],
+      "employees.work.view": ["Employees · Work Information", "View"], "employees.work.edit": ["Employees · Work Information", "Edit"],
+      "employees.insurance.view": ["Employees · Insurance", "View"], "employees.insurance.edit": ["Employees · Insurance", "Edit"],
+      "employees.financial.view": ["Employees · Financial Information", "View"], "employees.financial.edit": ["Employees · Financial Information", "Edit"],
+      "dashboard.view": ["Dashboard", "View Dashboard"],
+      "setup.view": ["SetUp", "View Settings"], "setup.edit": ["SetUp", "Manage Settings"],
+      "users.view": ["Users & Access", "View Users"], "users.create": ["Users & Access", "Add Users"], "users.edit": ["Users & Access", "Edit Users"], "users.deactivate": ["Users & Access", "Deactivate Users"],
+      "roles.view": ["Users & Access", "View Roles & Permissions"], "roles.create": ["Users & Access", "Create Roles"], "roles.edit": ["Users & Access", "Manage Roles & Permissions"], "roles.delete": ["Users & Access", "Delete Roles"],
+    };
+    return map[key] || [permission.module.replaceAll(".", " · "), permission.description || permission.action.replaceAll("_", " ")];
   };
-  return (
-    <section className="section-view">
-      <div className="section-head">
-        <div>
-          <SetupBreadcrumb
-            group="User Management"
-            current="Roles & Permissions"
-          />
-          <h1>Roles & Permissions</h1>
-          <p>Define access with focused, grouped permissions.</p>
-        </div>
-        <button
-          className="primary"
-          onClick={async () => {
-            const name = window.prompt("Role name");
-            if (name) {
-              try {
-                await setupApi.createRole({ name }, token);
-                toast("Role created.", "success");
-                load();
-              } catch (e) {
-                toast(e.message, "error");
-              }
-            }
-          }}
-        >
-          + Create Role
-        </button>
-      </div>
-      {!roles ? (
-        <LoadingRows />
-      ) : (
-        <div className="roles-layout">
-          <aside className="role-list">
-            {roles.map((r) => (
-              <button
-                className={selected?.id === r.id ? "selected" : ""}
-                key={r.id}
-                onClick={() => setSelected(r)}
-              >
-                <strong>{r.name}</strong>
-                <Status active={r.is_active} />
-              </button>
-            ))}
-          </aside>
-          <div className="permissions">
-            {selected ? (
-              <>
-                <div className="role-detail">
-                  <div>
-                    <h2>{selected.name}</h2>
-                    <p>{selected.description || "No role description yet."}</p>
-                  </div>
-                  <div className="row-actions">
-                    <Status active={selected.is_active} />
-                    <button
-                      className="text-button"
-                      onClick={async () => {
-                        const name = window.prompt("Role name", selected.name);
-                        if (!name) return;
-                        try {
-                          await setupApi.patchRole(
-                            selected.id,
-                            { name },
-                            token,
-                          );
-                          toast("Role updated.", "success");
-                          load();
-                        } catch (e) {
-                          toast(e.message, "error");
-                        }
-                      }}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      className={`text-button ${selected.is_active ? "danger-text" : ""}`}
-                      onClick={async () => {
-                        try {
-                          await setupApi.roleStatus(
-                            selected.id,
-                            !selected.is_active,
-                            token,
-                          );
-                          toast(
-                            `Role ${selected.is_active ? "deactivated" : "activated"}.`,
-                            "success",
-                          );
-                          load();
-                        } catch (e) {
-                          toast(e.message, "error");
-                        }
-                      }}
-                    >
-                      {selected.is_active ? "Deactivate" : "Activate"}
-                    </button>
-                  </div>
-                </div>
-                {Object.entries(grouped).map(([module, ps]) => (
-                  <section className="permission-group" key={module}>
-                    <h3>{module}</h3>
-                    {ps.map((p) => (
-                      <label className="permission" key={p.id}>
-                        <input
-                          type="checkbox"
-                          checked={permissionIds.has(p.id)}
-                          onChange={() => toggle(p.id)}
-                          disabled={busy || !selected.is_active}
-                        />
-                        <span>{p.action.replaceAll("_", " ")}</span>
-                        <small>{p.description}</small>
-                      </label>
-                    ))}
-                  </section>
-                ))}
-              </>
-            ) : (
-              <div className="empty">
-                <h3>Select a role to manage its permissions.</h3>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-    </section>
-  );
+  const groups = perms.reduce((all, permission) => { const [group] = readable(permission); (all[group] ||= []).push(permission); return all; }, {});
+  const toggle = (id) => setSelectedIds((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  const setGroup = (items, enabled) => setSelectedIds((current) => { const next = new Set(current); items.forEach((item) => enabled ? next.add(item.id) : next.delete(item.id)); return next; });
+  const save = async () => { if (!selected) return; setBusy(true); try { await setupApi.rolePermissions(selected.id, [...selectedIds], token); toast("Permissions saved.", "success"); await load(selected.id); } catch (e) { toast(e.message, "error"); } finally { setBusy(false); } };
+  const usersFor = (role) => role.user_roles?.[0]?.count ?? 0;
+  return <section className="section-view roles-view"><div className="section-head"><div><SetupBreadcrumb group="Access & Security" current="Roles & Permissions"/><h1>Roles & Permissions</h1><p>Choose what each role can see and do. Changes apply after you save.</p></div><button className="primary" onClick={async () => { const name = window.prompt("Role name"); if (!name) return; try { await setupApi.createRole({ name }, token); toast("Role created.", "success"); load(); } catch (e) { toast(e.message, "error"); } }}>+ Create Role</button></div><p className="employee-notice">Super Admin accounts have full system access independently of role permissions.</p>{!roles ? <LoadingRows /> : <div className="roles-layout"><aside className="role-list role-cards">{roles.map((role) => <button className={selected?.id === role.id ? "selected" : ""} key={role.id} onClick={() => { setSelected(role); setSelectedIds(new Set(role.role_permissions?.map((item) => item.permission_id) || [])); }}><span><strong>{role.name}</strong><small>{role.description || "Custom access role"}</small></span><span><Status active={role.is_active}/><small>{usersFor(role)} assigned</small></span></button>)}</aside><div className="permissions">{selected ? <><div className="role-detail"><div><p className="eyebrow">ROLE ACCESS</p><h2>{selected.name}</h2><p>{selected.description || "Select the access this role needs."}</p></div><div className="row-actions"><Status active={selected.is_active}/><button className="secondary" disabled={busy || !selected.is_active} onClick={() => setSelectedIds(new Set(perms.map((item) => item.id)))}>Select All</button><button className="secondary" disabled={busy || !selected.is_active} onClick={() => setSelectedIds(new Set())}>Clear All</button><button className="primary" disabled={busy || !selected.is_active} onClick={save}>{busy ? "Saving…" : "Save Permissions"}</button></div></div>{Object.entries(groups).map(([group, items]) => <section className="permission-group" key={group}><header><div><h3>{group}</h3><p>{items.length} access option{items.length === 1 ? "" : "s"}</p></div><button className="text-button" disabled={busy || !selected.is_active} onClick={() => setGroup(items, !items.every((item) => selectedIds.has(item.id)))}>{items.every((item) => selectedIds.has(item.id)) ? "Clear group" : "Select group"}</button></header>{items.map((item) => { const [, label] = readable(item); return <label className="permission" key={item.id}><input type="checkbox" checked={selectedIds.has(item.id)} onChange={() => toggle(item.id)} disabled={busy || !selected.is_active}/><span>{label}</span><small>{item.description}</small></label>; })}</section>)}<section className="advanced-permissions"><button className="secondary" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide" : "Show"} Advanced Permissions</button>{showAdvanced && <div>{perms.map((item) => <code key={item.id}>{item.permission_key}</code>)}</div>}</section></> : <div className="empty"><h3>Select a role to manage its permissions.</h3></div>}</div></div>}</section>;
 }
 
 function Insurance({ token, toast }) {

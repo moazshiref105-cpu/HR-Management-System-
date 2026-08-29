@@ -78,6 +78,7 @@ const emptyDashboardData = {
   employees: { rows: [], total: 0, total_pages: 0 },
   attention: { items: [] },
 };
+const emptyExecutive = { kpis: {}, movement: [], departments: [], resignation_reasons: [], turnover_departments: [], composition: {}, attention: [] };
 const date = (value) =>
   value
     ? new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" }).format(
@@ -117,6 +118,11 @@ const parseHash = () => {
   return state;
 };
 
+function ExecutiveBars({ title, subtitle, items = [], value = "count", suffix = "", onSelect }) {
+  const max = Math.max(...items.map((item) => Number(item[value]) || 0), 1);
+  return <section className="analytics-card executive-chart"><header><div><p className="eyebrow">{subtitle}</p><h2>{title}</h2></div></header>{items.length ? <div className="executive-bars">{items.slice(0, 8).map((item) => <button key={`${item.key}-${item.label}`} onClick={onSelect ? () => onSelect(item) : undefined} disabled={!onSelect}><span className="executive-bar-track"><i style={{ width: `${Math.max(6, ((Number(item[value]) || 0) / max) * 100)}%` }}/></span><b>{item.label}</b><strong>{Number(item[value]) || 0}{suffix}</strong></button>)}</div> : <p className="muted">No data is available for this selection.</p>}</section>;
+}
+
 export function Dashboard({ token, go }) {
   const [state, setState] = useState(parseHash);
   const [options, setOptions] = useState({
@@ -127,6 +133,8 @@ export function Dashboard({ token, go }) {
   });
   const [lookups, setLookups] = useState({});
   const [data, setData] = useState(emptyDashboardData);
+  const [executive, setExecutive] = useState(emptyExecutive);
+  const [executiveLoading, setExecutiveLoading] = useState(true);
   const [historyReady, setHistoryReady] = useState(false);
   const [showMoreFilters, setShowMoreFilters] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -258,6 +266,14 @@ export function Dashboard({ token, go }) {
     historyReady,
   ]);
 
+  useEffect(() => {
+    if (!historyReady) return;
+    let active = true;
+    setExecutiveLoading(true);
+    dashboardApi.executive(query, token).then((next) => { if (active) setExecutive(next); }).catch(() => {}).finally(() => { if (active) setExecutiveLoading(false); });
+    return () => { active = false; };
+  }, [token, JSON.stringify(query), historyReady]);
+
   const update = (key, value) =>
     setState((current) => ({
       ...current,
@@ -343,6 +359,10 @@ export function Dashboard({ token, go }) {
       page: 1,
     }));
   };
+  const selectExecutive = (item, filterKey, metric = state.metric, dimension = state.dimension) => {
+    if (item.key == null || item.key === "none") return;
+    setState((current) => ({ ...current, metric, dimension, [filterKey]: String(item.key), drill: [], page: 1 }));
+  };
   const backToDrill = (index) => setState((current) => {
     const keep = drill.slice(0, index + 1);
     const clear = Object.fromEntries(drill.slice(index + 1).map((item) => [item.filter_key, ""]));
@@ -369,6 +389,11 @@ export function Dashboard({ token, go }) {
     ([key]) => !["metric", "dimension", "from", "to"].includes(key),
   );
   const filterLabel = (key) => filterFields[key]?.label || dimensions[key] || key.replaceAll("_", " ");
+  const filterValueLabel = (key, value) => {
+    const field = filterFields[key];
+    const item = (lookups[field?.resource || key] || []).find((row) => String(row.id || row.value) === String(value));
+    return item?.name || item?.label || value;
+  };
   const employeeRows = data.employees.rows || [];
   const chart = (title, items, clickable = true) => (
     <section className={`analytics-card mini-chart${secondaryLoading && (items || []).length ? " is-refreshing" : ""}`}>
@@ -534,7 +559,7 @@ export function Dashboard({ token, go }) {
         )}
         {chips.map(([key, value]) => (
           <button key={key} onClick={() => update(key, "")}>
-            {filterLabel(key)}: {value}
+            {filterLabel(key)}: {filterValueLabel(key, value)}
             <X size={12} />
           </button>
         ))}
@@ -549,6 +574,29 @@ export function Dashboard({ token, go }) {
           <button key={metric} className={state.metric === metric ? "selected" : ""} onClick={() => setState((current) => ({ ...current, metric, dimension: "department", drill: [], page: 1 }))}>{label}</button>
         ))}
       </div>
+      <section className={`executive-dashboard${executiveLoading ? " is-loading" : ""}`}>
+        <div className="executive-heading"><div><p className="eyebrow">EXECUTIVE WORKFORCE</p><h2>Workforce health at a glance</h2><p>Connected to your period and global filters.</p></div>{executiveLoading && <span className="dashboard-updating">Updating executive insights…</span>}</div>
+        <div className="executive-kpis">
+          {[
+            ["total_employees", "Total Employees", "Current workforce"], ["active_employees", "Active Employees", "Currently employed"], ["new_hires", "New Hires", "During selected period"], ["resigned_employees", "Resigned Employees", "During selected period"], ["turnover_rate", "Turnover Rate", "Resignations ÷ average headcount", "%"], ["in_probation", "Employees in Probation", "Current employees"],
+          ].map(([key, title, hint, suffix]) => <button key={key} className={state.metric === key ? "selected" : ""} onClick={() => key !== "turnover_rate" && update("metric", key)} disabled={key === "turnover_rate"}><span>{title}</span><strong>{executiveLoading && executive.kpis[key] == null ? "—" : `${executive.kpis[key] ?? 0}${suffix || ""}`}</strong><small>{hint}</small></button>)}
+        </div>
+        <div className="executive-main-grid">
+          <section className="analytics-card workforce-trend"><header><div><p className="eyebrow">WORKFORCE MOVEMENT</p><h2>Workforce trend</h2><p>Active workforce, hires and resignations over time.</p></div></header>{executive.movement?.length ? <div className="movement-chart">{executive.movement.map((item) => <article key={item.period}><span className="movement-active" style={{ height: `${Math.max(8, (item.active_workforce / Math.max(...executive.movement.map((row) => row.active_workforce), 1)) * 100)}%` }}/><i className="movement-hires" style={{ height: `${Math.max(4, (item.new_hires / Math.max(...executive.movement.map((row) => row.new_hires), 1)) * 100)}%` }}/><b>{item.period}</b><small>{item.active_workforce} active · {item.new_hires} hired · {item.resignations} resigned · {item.turnover_rate}% turnover</small></article>)}</div> : <p className="muted">Loading workforce movement…</p>}</section>
+          <section className="analytics-card turnover-summary"><p className="eyebrow">TURNOVER ANALYSIS</p><h2>{executive.kpis.turnover_rate ?? 0}% turnover</h2><p>Resignations during the selected period divided by average headcount.</p><dl><div><dt>Resignations</dt><dd>{executive.kpis.resigned_employees ?? 0}</dd></div><div><dt>Start headcount</dt><dd>{executive.kpis.start_headcount ?? 0}</dd></div><div><dt>End headcount</dt><dd>{executive.kpis.end_headcount ?? 0}</dd></div><div><dt>Average headcount</dt><dd>{executive.kpis.average_headcount ?? 0}</dd></div></dl></section>
+        </div>
+        <div className="executive-insights-grid">
+          <ExecutiveBars title="Employees by department" subtitle="WORKFORCE DISTRIBUTION" items={executive.departments} onSelect={(item) => selectExecutive(item, "department_id", "active_employees", "department")}/>
+          <ExecutiveBars title="Top resignation reasons" subtitle="WHY PEOPLE LEAVE" items={executive.resignation_reasons} onSelect={(item) => selectExecutive(item, "leaving_reason_id", "resigned_employees", "department")}/>
+          <ExecutiveBars title="Turnover by department" subtitle="TURNOVER RATE" items={executive.turnover_departments} value="turnover_rate" suffix="%" onSelect={(item) => selectExecutive(item, "department_id", "resigned_employees", "leaving_reason")}/>
+        </div>
+        <div className="composition-grid">
+          <ExecutiveBars title="Gender" subtitle="WORKFORCE COMPOSITION" items={executive.composition?.gender} />
+          <ExecutiveBars title="Employee classification" subtitle="WORKFORCE COMPOSITION" items={executive.composition?.classification} />
+          <ExecutiveBars title="Governorates" subtitle="WORKFORCE COMPOSITION" items={executive.composition?.governorate} onSelect={(item) => selectExecutive(item, "governorate_id")}/>
+          <ExecutiveBars title="Age bands" subtitle="WORKFORCE COMPOSITION" items={executive.composition?.age_bands} />
+        </div>
+      </section>
       <div className="dashboard-kpis">
         {(data.summary.cards || []).map((card) => (
           <button
@@ -577,6 +625,7 @@ export function Dashboard({ token, go }) {
           </select>
         </label>
       )}
+      <div className="advanced-analysis-heading"><div><p className="eyebrow">EXPLORE WORKFORCE</p><h2>Advanced Analysis</h2><p>Use the full analytical drill-down when you need to investigate a specific workforce question.</p></div></div>
       <div className="dashboard-grid">
         <section className={`analytics-card primary-chart${coreRefreshing ? " is-refreshing" : ""}`}>
           <header>

@@ -160,7 +160,7 @@ final class SetupApi
     /** @param array<string, mixed> $body @param array<string, mixed> $actor */
     private function roles(string $method, array $route, array $body, array $actor): array
     {
-        if ($method === 'GET' && $route === []) { $this->allow($actor, 'roles.view'); return $this->supabase->service('GET', '/rest/v1/roles?select=*,role_permissions(permission_id,permissions(id,permission_key,module,action))&order=name'); }
+        if ($method === 'GET' && $route === []) { $this->allow($actor, 'roles.view'); return $this->supabase->service('GET', '/rest/v1/roles?select=*,role_permissions(permission_id,permissions(id,permission_key,module,action)),user_roles(count)&order=name'); }
         if ($method === 'POST' && $route === []) { $this->allow($actor, 'roles.create'); return $this->supabase->service('POST', '/rest/v1/roles', [[ 'name' => $this->required($body, 'name'), 'description' => $body['description'] ?? null, 'created_by' => $actor['id'] ]], ['Prefer: return=representation']); }
         $id = (int) ($route[0] ?? 0); if ($id < 1) throw new RuntimeException('Role ID is required.');
         if ($method === 'PATCH' && count($route) === 1) { $this->allow($actor, 'roles.edit'); $body = array_intersect_key($body, array_flip(['name', 'description'])); if ($body === []) throw new RuntimeException('At least one editable field is required.'); if (array_key_exists('name', $body) && trim((string) $body['name']) === '') throw new RuntimeException('name cannot be blank.'); return $this->supabase->service('PATCH', '/rest/v1/roles?id=eq.' . $id, $body, ['Prefer: return=representation']); }
