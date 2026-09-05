@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import logo from "../assets/images/jushi-logo.png";
 import { authConfigured, supabase } from "./auth";
-import { capabilitiesApi, employeesApi, setupApi } from "./api";
+import { capabilitiesApi, employeesApi, invalidateCapabilitiesCache, setupApi } from "./api";
 import { EmployeeDetail, EmployeeForm, EmployeesList } from "./Employees";
 import { Dashboard } from "./Dashboard";
 
@@ -641,7 +641,7 @@ function Drawer({ title, children, onClose }) {
   );
 }
 
-function Users({ token, toast }) {
+function Users({ token, toast, onCapabilitiesChanged }) {
   const [users, setUsers] = useState(null);
   const [roles, setRoles] = useState([]);
   const [search, setSearch] = useState("");
@@ -674,6 +674,7 @@ function Users({ token, toast }) {
     setBusy(true);
     try {
       await setupApi.userStatus(confirm.id, false, token);
+      onCapabilitiesChanged();
       toast("User deactivated.", "success");
       setConfirm(null);
       load();
@@ -750,6 +751,7 @@ function Users({ token, toast }) {
                       setupApi
                         .userStatus(u.id, true, token)
                         .then(() => {
+                          onCapabilitiesChanged();
                           toast("User activated.", "success");
                           load();
                         })
@@ -773,6 +775,7 @@ function Users({ token, toast }) {
           toast={toast}
           onClose={() => setEditor(null)}
           done={load}
+          onCapabilitiesChanged={onCapabilitiesChanged}
         />
       )}{" "}
       {confirm && (
@@ -788,7 +791,7 @@ function Users({ token, toast }) {
   );
 }
 
-function UserEditor({ user, roles, token, toast, onClose, done }) {
+function UserEditor({ user, roles, token, toast, onClose, done, onCapabilitiesChanged }) {
   const isNew = !user.id;
   const [form, setForm] = useState({
     full_name: user.full_name || "",
@@ -813,6 +816,7 @@ function UserEditor({ user, roles, token, toast, onClose, done }) {
         );
         await setupApi.userRoles(user.id, form.role_ids, token);
       }
+      onCapabilitiesChanged();
       toast(isNew ? "User created." : "User details saved.", "success");
       done();
       onClose();
@@ -896,7 +900,7 @@ function UserEditor({ user, roles, token, toast, onClose, done }) {
   );
 }
 
-function Roles({ token, toast }) {
+function Roles({ token, toast, onCapabilitiesChanged }) {
   const [roles, setRoles] = useState(null), [perms, setPerms] = useState([]), [selected, setSelected] = useState(null), [selectedIds, setSelectedIds] = useState(new Set()), [busy, setBusy] = useState(false), [showAdvanced, setShowAdvanced] = useState(false);
   const load = async (keepId) => {
     try {
@@ -925,7 +929,7 @@ function Roles({ token, toast }) {
   const groups = perms.reduce((all, permission) => { const [group] = readable(permission); (all[group] ||= []).push(permission); return all; }, {});
   const toggle = (id) => setSelectedIds((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
   const setGroup = (items, enabled) => setSelectedIds((current) => { const next = new Set(current); items.forEach((item) => enabled ? next.add(item.id) : next.delete(item.id)); return next; });
-  const save = async () => { if (!selected) return; setBusy(true); try { await setupApi.rolePermissions(selected.id, [...selectedIds], token); toast("Permissions saved.", "success"); await load(selected.id); } catch (e) { toast(e.message, "error"); } finally { setBusy(false); } };
+  const save = async () => { if (!selected) return; setBusy(true); try { await setupApi.rolePermissions(selected.id, [...selectedIds], token); onCapabilitiesChanged(); toast("Permissions saved.", "success"); await load(selected.id); } catch (e) { toast(e.message, "error"); } finally { setBusy(false); } };
   const usersFor = (role) => role.user_roles?.[0]?.count ?? 0;
   return <section className="section-view roles-view"><div className="section-head"><div><SetupBreadcrumb group="Access & Security" current="Roles & Permissions"/><h1>Roles & Permissions</h1><p>Choose what each role can see and do. Changes apply after you save.</p></div><button className="primary" onClick={async () => { const name = window.prompt("Role name"); if (!name) return; try { await setupApi.createRole({ name }, token); toast("Role created.", "success"); load(); } catch (e) { toast(e.message, "error"); } }}>+ Create Role</button></div><p className="employee-notice">Super Admin accounts have full system access independently of role permissions.</p>{!roles ? <LoadingRows /> : <div className="roles-layout"><aside className="role-list role-cards">{roles.map((role) => <button className={selected?.id === role.id ? "selected" : ""} key={role.id} onClick={() => { setSelected(role); setSelectedIds(new Set(role.role_permissions?.map((item) => item.permission_id) || [])); }}><span><strong>{role.name}</strong><small>{role.description || "Custom access role"}</small></span><span><Status active={role.is_active}/><small>{usersFor(role)} assigned</small></span></button>)}</aside><div className="permissions">{selected ? <><div className="role-detail"><div><p className="eyebrow">ROLE ACCESS</p><h2>{selected.name}</h2><p>{selected.description || "Select the access this role needs."}</p></div><div className="row-actions"><Status active={selected.is_active}/><button className="secondary" disabled={busy || !selected.is_active} onClick={() => setSelectedIds(new Set(perms.map((item) => item.id)))}>Select All</button><button className="secondary" disabled={busy || !selected.is_active} onClick={() => setSelectedIds(new Set())}>Clear All</button><button className="primary" disabled={busy || !selected.is_active} onClick={save}>{busy ? "Saving…" : "Save Permissions"}</button></div></div>{Object.entries(groups).map(([group, items]) => <section className="permission-group" key={group}><header><div><h3>{group}</h3><p>{items.length} access option{items.length === 1 ? "" : "s"}</p></div><button className="text-button" disabled={busy || !selected.is_active} onClick={() => setGroup(items, !items.every((item) => selectedIds.has(item.id)))}>{items.every((item) => selectedIds.has(item.id)) ? "Clear group" : "Select group"}</button></header>{items.map((item) => { const [, label] = readable(item); return <label className="permission" key={item.id}><input type="checkbox" checked={selectedIds.has(item.id)} onChange={() => toggle(item.id)} disabled={busy || !selected.is_active}/><span>{label}</span><small>{item.description}</small></label>; })}</section>)}<section className="advanced-permissions"><button className="secondary" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide" : "Show"} Advanced Permissions</button>{showAdvanced && <div>{perms.map((item) => <code key={item.id}>{item.permission_key}</code>)}</div>}</section></> : <div className="empty"><h3>Select a role to manage its permissions.</h3></div>}</div></div>}</section>;
 }
@@ -1122,8 +1126,12 @@ function AppShell({ session, onLogout }) {
     [toast, setToast] = useState(null),
     [capabilities, setCapabilities] = useState([]);
   const notify = (message, kind = "success") => setToast({ message, kind });
-  useEffect(() => {
+  const loadCapabilities = () => {
     capabilitiesApi.get(session.access_token).then(setCapabilities).catch(() => setCapabilities([]));
+  };
+  const refreshCapabilities = () => { invalidateCapabilitiesCache(); loadCapabilities(); };
+  useEffect(() => {
+    loadCapabilities();
   }, [session.access_token]);
   useEffect(() => {
     const onHash = () => setPage((location.hash.slice(1).split("?")[0]) || "home");
@@ -1145,9 +1153,9 @@ function AppShell({ session, onLogout }) {
       <EmployeeDetail id={employeeParts[1]} token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
     ) :
     page === "users" ? (
-      <Users token={session.access_token} toast={notify} />
+      <Users token={session.access_token} toast={notify} onCapabilitiesChanged={refreshCapabilities} />
     ) : page === "roles" ? (
-      <Roles token={session.access_token} toast={notify} />
+      <Roles token={session.access_token} toast={notify} onCapabilitiesChanged={refreshCapabilities} />
     ) : page === "insurance" ? (
       <Insurance token={session.access_token} toast={notify} />
     ) : page === "home" ? (
@@ -1196,11 +1204,14 @@ export default function App() {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    } = supabase.auth.onAuthStateChange((_e, s) => {
+      if (!s) invalidateCapabilitiesCache();
+      setSession(s);
+    });
     return () => subscription.unsubscribe();
   }, []);
   return session ? (
-    <AppShell session={session} onLogout={() => supabase.auth.signOut()} />
+    <AppShell session={session} onLogout={() => { invalidateCapabilitiesCache(); supabase.auth.signOut(); }} />
   ) : (
     <Login onSession={setSession} />
   );

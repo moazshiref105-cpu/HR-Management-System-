@@ -62,28 +62,28 @@ export const employeeLookupApi = {
   invalidate: () => { employeeLookupCache = null; employeeLookupPromise = null },
 }
 
-let capabilitiesCache = null
-let capabilitiesToken = null
-let capabilitiesPromise = null
+const CAPABILITIES_TTL_MS = 30_000
+let capabilitiesCache = { token: null, data: null, expiresAt: 0, promise: null }
+export const invalidateCapabilitiesCache = () => { capabilitiesCache = { token: null, data: null, expiresAt: 0, promise: null } }
 export const capabilitiesApi = {
   get: (token) => {
-    if (capabilitiesToken !== token) {
-      capabilitiesCache = null
-      capabilitiesToken = token
-      capabilitiesPromise = null
+    if (capabilitiesCache.token !== token) capabilitiesCache = { token, data: null, expiresAt: 0, promise: null }
+    const cache = capabilitiesCache
+    if (cache.data && cache.expiresAt > Date.now()) return Promise.resolve(cache.data)
+    if (!cache.promise) {
+      cache.promise = setupApi.capabilities(token)
+        .then((data) => {
+          if (capabilitiesCache === cache) {
+            cache.data = data
+            cache.expiresAt = Date.now() + CAPABILITIES_TTL_MS
+          }
+          return data
+        })
+        .finally(() => { if (capabilitiesCache === cache) cache.promise = null })
     }
-    if (capabilitiesCache) return Promise.resolve(capabilitiesCache)
-    if (!capabilitiesPromise) {
-      capabilitiesPromise = setupApi.capabilities(token)
-        .then((data) => (capabilitiesCache = data))
-        .finally(() => { capabilitiesPromise = null })
-    }
-    return capabilitiesPromise
+    return cache.promise
   },
-  invalidate: () => {
-    capabilitiesCache = null
-    capabilitiesPromise = null
-  },
+  invalidate: invalidateCapabilitiesCache,
 }
 
 export const employeesApi = {
