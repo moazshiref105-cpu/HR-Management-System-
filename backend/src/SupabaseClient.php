@@ -19,6 +19,25 @@ final class SupabaseClient
         return $this->request($method, $path, $this->secretKey, $payload, $headers);
     }
 
+    /** @return array{data:mixed,total:int} */
+    public function serviceWithExactCount(string $method, string $path, ?array $payload = null, array $headers = []): array
+    {
+        $curl = $this->createHandle($method, $path, $this->secretKey, $payload, array_merge(['Prefer: count=exact'], $headers));
+        curl_setopt($curl, CURLOPT_HEADER, true);
+        $response = curl_exec($curl);
+        $status = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+        $headerSize = (int) curl_getinfo($curl, CURLINFO_HEADER_SIZE);
+        if (!is_string($response) || $status < 200 || $status >= 300) {
+            throw new RuntimeException("Supabase request failed with HTTP {$status}.");
+        }
+        $headersRaw = substr($response, 0, $headerSize);
+        $body = substr($response, $headerSize);
+        if (!preg_match('/^content-range:\s*[^\/]+\/(\d+)\s*$/mi', $headersRaw, $match)) {
+            throw new RuntimeException('Supabase exact count was not returned.');
+        }
+        return ['data' => $body === '' ? [] : json_decode($body, true, 512, JSON_THROW_ON_ERROR), 'total' => (int) $match[1]];
+    }
+
     /**
      * Runs controlled service-role requests concurrently. Callers provide only
      * internally constructed method/path/payload tuples; this is not exposed to

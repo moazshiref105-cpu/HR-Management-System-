@@ -87,10 +87,11 @@ export const capabilitiesApi = {
 }
 
 export const employeesApi = {
-  listEmployees: (params, t) => {
-    const query = new URLSearchParams(Object.entries(params || {}).filter(([, value]) => value !== "" && value != null)).toString()
+  listEmployees: (options, t, signal) => {
+    const { page = 1, pageSize = 25, search, status, employee_status, department, team, position, project, governorate, sort = "employee_number", direction = "asc" } = options || {}
+    const query = new URLSearchParams(Object.entries({ page, page_size: pageSize, search, status: status ?? employee_status, department, team, position, project, governorate, sort, direction }).filter(([, value]) => value !== "" && value != null)).toString()
     const path = `/api/employees${query ? `?${query}` : ""}`
-    return dedupeInFlight(`GET:${t}:${path}`, () => api(path, t))
+    return api(path, t, { signal })
   },
   getEmployee: (id, t) => {
     const path = `/api/employees/${id}`

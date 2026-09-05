@@ -87,7 +87,12 @@ final class EmployeeApi
     private function list(array $query, array $actor): array
     {
         $this->allow($actor, 'employees.view');
+        $page = $this->page($query['page'] ?? 1);
+        $pageSize = $this->pageSize($query['page_size'] ?? 25);
+        $sort = $this->sort($query['sort'] ?? 'employee_number');
+        $direction = $this->direction($query['direction'] ?? 'asc');
         $filters = [];
+        if (isset($query['status']) && $query['status'] !== '') $query['employee_status'] = $query['status'];
         foreach (['employee_status' => 'employee_status', 'department' => 'department_id', 'team' => 'team_id', 'position' => 'position_id', 'project' => 'project_id', 'governorate' => 'governorate_id'] as $input => $column) {
             if (isset($query[$input]) && $query[$input] !== '') $filters[] = $column . '=eq.' . rawurlencode((string) $query[$input]);
         }
@@ -100,10 +105,19 @@ final class EmployeeApi
         // Keep the list projection aligned with the columns rendered by EmployeesList.
         // Detail-only fields and relations belong to the detail endpoint, not every list row.
         $select = 'id,employee_number,employee_status,arabic_full_name,english_full_name,joining_date,department:departments(id,name),position:positions(id,name,position_code)';
-        $url = '/rest/v1/employees?select=' . $select . '&order=employee_number';
+        $offset = ($page - 1) * $pageSize;
+        $url = '/rest/v1/employees?select=' . $select . '&order=' . $sort . '.' . $direction . ',id.asc&offset=' . $offset . '&limit=' . $pageSize;
         if ($filters) $url .= '&' . implode('&', $filters);
-        return $this->supabase->service('GET', $url);
+        $result = $this->supabase->serviceWithExactCount('GET', $url);
+        $total = $result['total'];
+        $totalPages = $total === 0 ? 0 : (int) ceil($total / $pageSize);
+        return ['data' => $result['data'], 'pagination' => ['page' => $page, 'page_size' => $pageSize, 'total' => $total, 'total_pages' => $totalPages, 'has_next' => $page < $totalPages, 'has_previous' => $page > 1]];
     }
+
+    private function page(mixed $value): int { if (!is_int($value) && !ctype_digit((string) $value)) throw new RuntimeException('page must be a positive integer.'); $page = (int) $value; if ($page < 1) throw new RuntimeException('page must be a positive integer.'); return $page; }
+    private function pageSize(mixed $value): int { if (!is_int($value) && !ctype_digit((string) $value)) throw new RuntimeException('page_size must be 25, 50, or 100.'); $pageSize = (int) $value; if (!in_array($pageSize, [25, 50, 100], true)) throw new RuntimeException('page_size must be 25, 50, or 100.'); return $pageSize; }
+    private function sort(mixed $value): string { $sort = (string) $value; $allowed = ['employee_number' => 'employee_number', 'full_name_ar' => 'arabic_full_name', 'full_name_en' => 'english_full_name', 'joining_date' => 'joining_date', 'employee_status' => 'employee_status']; if (!isset($allowed[$sort])) throw new RuntimeException('Unsupported employee sort field.'); return $allowed[$sort]; }
+    private function direction(mixed $value): string { $direction = strtolower((string) $value); if (!in_array($direction, ['asc', 'desc'], true)) throw new RuntimeException('direction must be asc or desc.'); return $direction; }
 
     /** @param array<string,mixed> $body @param array<string,mixed> $actor */
     private function create(array $body, array $actor): array
