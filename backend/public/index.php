@@ -29,5 +29,9 @@ try {
     $status = $exception instanceof HttpException ? $exception->status : ($exception instanceof RuntimeException ? 400 : 500);
     http_response_code($status);
     header('Content-Type: application/json; charset=utf-8');
-    echo json_encode(['error' => $status === 500 ? 'Internal server error' : $exception->getMessage()]);
+    $message = $status === 500 ? 'Internal server error' : $exception->getMessage();
+    $error = $exception instanceof HttpException && $exception->errorCode !== null
+        ? ['code' => $exception->errorCode, 'message' => $message]
+        : $message;
+    echo json_encode(['error' => $error]);
 }

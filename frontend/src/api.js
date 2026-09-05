@@ -9,13 +9,31 @@ const masterPath = (resource) => {
   return `/api/setup/master-data/${resource}`
 }
 
+export class ApiError extends Error {
+  constructor(message, { status, code = null, details = null } = {}) {
+    super(message)
+    this.name = "ApiError"
+    this.status = status
+    this.code = code
+    this.details = details
+  }
+}
+
 export async function api(path, token, options = {}) {
   const response = await fetch(`${BASE}${path}`, {
     ...options,
     headers: { Authorization: `Bearer ${token}`, ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers },
   })
   const payload = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(payload.error || 'The request could not be completed.')
+  if (!response.ok) {
+    const error = payload.error
+    const structured = error && typeof error === "object" ? error : null
+    throw new ApiError(structured?.message || error || 'The request could not be completed.', {
+      status: response.status,
+      code: structured?.code || null,
+      details: structured?.details || null,
+    })
+  }
   return payload.data
 }
 

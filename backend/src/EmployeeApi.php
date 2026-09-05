@@ -127,9 +127,10 @@ final class EmployeeApi
         $this->guardSections($body, $actor, true);
         $record = $this->employeeRecord($body, true, $actor);
         $created = $this->supabase->service('POST', '/rest/v1/employees', [$record], ['Prefer: return=representation']);
-        $id = (string) ($created[0]['id'] ?? '');
-        if ($id !== '') $this->refresh($id, $actor);
-        return $this->detail($id, $actor);
+        $row = $created[0] ?? null;
+        if (!is_array($row) || !isset($row['id'])) throw new RuntimeException('Employee creation did not return a record.');
+        $this->refreshNotificationsSafely((string) $row['id']);
+        return $this->mutationResult($row);
     }
 
     /** @param array<string,mixed> $body @param array<string,mixed> $actor */
@@ -140,9 +141,12 @@ final class EmployeeApi
         $this->guardSections($body, $actor, false);
         $record = $this->employeeRecord($body, false, $actor);
         if ($record === []) throw new RuntimeException('At least one editable field is required.');
-        $this->supabase->service('PATCH', '/rest/v1/employees?id=eq.' . rawurlencode($id), $record, ['Prefer: return=representation']);
-        $this->refresh($id, $actor);
-        return $this->detail($id, $actor);
+        $expectedUpdatedAt = $this->expectedUpdatedAt($body['expected_updated_at'] ?? null);
+        $updated = $this->supabase->service('PATCH', $this->employeeVersionPath($id, $expectedUpdatedAt), $record, ['Prefer: return=representation']);
+        $row = $updated[0] ?? null;
+        if (!is_array($row)) $this->throwUpdateFailure($id);
+        $this->refreshNotificationsSafely($id);
+        return $this->mutationResult($row);
     }
 
     /** @param array<string,mixed> $body @param array<string,mixed> $actor */
@@ -158,8 +162,12 @@ final class EmployeeApi
         }
         $record = array_intersect_key($body, array_flip(self::LEAVING));
         $record['employee_status'] = $status; $record['updated_by'] = $actor['id'];
-        $this->supabase->service('PATCH', '/rest/v1/employees?id=eq.' . rawurlencode($id), $record, ['Prefer: return=representation']);
-        return $this->detail($id, $actor);
+        $expectedUpdatedAt = $this->expectedUpdatedAt($body['expected_updated_at'] ?? null);
+        $updated = $this->supabase->service('PATCH', $this->employeeVersionPath($id, $expectedUpdatedAt), $record, ['Prefer: return=representation']);
+        $row = $updated[0] ?? null;
+        if (!is_array($row)) $this->throwUpdateFailure($id);
+        $this->refreshNotificationsSafely($id);
+        return $this->mutationResult($row);
     }
 
     /** @param array<string,mixed> $body @param array<string,mixed> $actor */
@@ -187,14 +195,57 @@ final class EmployeeApi
             if ($this->renewalExists($id, (string) $body['renewal_signing_date'])) throw new RuntimeException('Contract renewal already exists for this date.');
             throw $exception;
         }
-        $this->refresh($id, $actor);
-        return ['renewal' => $result, 'employee' => $this->detail($id, $actor)];
+        $this->refreshNotificationsSafely($id);
+        return ['renewal' => $result];
     }
 
     private function renewalExists(string $employeeId, string $signingDate): bool
     {
         $rows = $this->supabase->service('GET', '/rest/v1/employee_contract_renewals?select=id&employee_id=eq.' . rawurlencode($employeeId) . '&renewal_signing_date=eq.' . rawurlencode($signingDate) . '&limit=1');
         return isset($rows[0]);
+    }
+
+    private function expectedUpdatedAt(mixed $value): string
+    {
+        if (!is_string($value) || !preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/', $value)) {
+            throw new RuntimeException('expected_updated_at must be a valid timestamp.');
+        }
+        try {
+            new DateTimeImmutable($value);
+        } catch (\Throwable) {
+            throw new RuntimeException('expected_updated_at must be a valid timestamp.');
+        }
+        return $value;
+    }
+
+    private function employeeVersionPath(string $id, string $expectedUpdatedAt): string
+    {
+        return '/rest/v1/employees?id=eq.' . rawurlencode($id) . '&updated_at=eq.' . rawurlencode($expectedUpdatedAt);
+    }
+
+    private function throwUpdateFailure(string $id): never
+    {
+        $exists = $this->supabase->service('GET', '/rest/v1/employees?select=id&id=eq.' . rawurlencode($id) . '&limit=1');
+        if (!isset($exists[0])) throw new HttpException('Employee not found.', 404);
+        throw new HttpException('Employee data has changed since you opened it.', 409, 'employee_conflict');
+    }
+
+    /** @param array<string,mixed> $row @return array{id:string,updated_at:string} */
+    private function mutationResult(array $row): array
+    {
+        $id = $row['id'] ?? null;
+        $updatedAt = $row['updated_at'] ?? null;
+        if (!is_string($id) || !is_string($updatedAt)) throw new RuntimeException('Employee mutation did not return a concurrency marker.');
+        return ['id' => $id, 'updated_at' => $updatedAt];
+    }
+
+    private function refreshNotificationsSafely(string $id): void
+    {
+        try {
+            $this->refreshNotifications($id);
+        } catch (\Throwable) {
+            error_log('HMS notification refresh failed for employee ' . $id);
+        }
     }
 
     /** @param array<string,mixed> $actor */
@@ -224,7 +275,7 @@ final class EmployeeApi
         $batch = array_combine(array_keys($requests), $batchRows);
         $row = $batch['employee'][0] ?? null;
         if (!is_array($row)) throw new HttpException('Employee not found.', 404);
-        $result = ['id' => $row['id'], 'employee_number' => $row['employee_number'], 'employee_status' => $row['employee_status'], 'employee_classification' => $row['employee_classification']];
+        $result = ['id' => $row['id'], 'employee_number' => $row['employee_number'], 'employee_status' => $row['employee_status'], 'employee_classification' => $row['employee_classification'], 'updated_at' => $row['updated_at']];
         if ($personal) $result['personal'] = $this->pick($row, array_merge(self::PERSONAL, ['identity_card_expiration_date', 'religion', 'marital_status', 'diploma', 'governorate']));
         if ($work) $result['work'] = $this->pick($row, array_merge(self::WORK, ['contract_expiration_date', 'probation_due_date', 'department', 'shift_type', 'team', 'position', 'project']));
         $wives = $row['wives'] ?? [];
