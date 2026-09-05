@@ -81,15 +81,6 @@ final class SupabaseClient
         }
     }
 
-    public function authUser(string $accessToken): array
-    {
-        $user = $this->request('GET', '/auth/v1/user', $accessToken, null, ['apikey: ' . $this->secretKey]);
-        if (!is_array($user)) {
-            throw new RuntimeException('Invalid Auth response.');
-        }
-        return $user;
-    }
-
     private function request(string $method, string $path, string $authorization, ?array $payload, array $headers): mixed
     {
         $curl = $this->createHandle($method, $path, $authorization, $payload, $headers);

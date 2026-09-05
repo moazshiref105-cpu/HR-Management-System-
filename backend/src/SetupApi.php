@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Hms\Backend;
 
 use RuntimeException;
-use Throwable;
 
 final class SetupApi
 {
@@ -17,7 +16,10 @@ final class SetupApi
         'leaving-reasons' => 'leaving_reasons', 'license-types' => 'license_types',
     ];
 
-    private function __construct(private readonly SupabaseClient $supabase)
+    private function __construct(
+        private readonly SupabaseClient $supabase,
+        private readonly AuthenticatedActorResolver $auth,
+    )
     {
     }
 
@@ -28,7 +30,8 @@ final class SetupApi
         if (filter_var($url, FILTER_VALIDATE_URL) === false || $key === '' || !function_exists('curl_init')) {
             throw new RuntimeException('Server configuration is incomplete.');
         }
-        return new self(new SupabaseClient($url, $key));
+        $supabase = new SupabaseClient($url, $key);
+        return new self($supabase, AuthenticatedActorResolver::fromEnvironment($supabase, $url));
     }
 
     public function dispatch(string $method, string $requestUri): never
@@ -59,22 +62,7 @@ final class SetupApi
     /** @return array<string, mixed> */
     private function actor(): array
     {
-        $header = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
-        if (!preg_match('/^Bearer\s+(.+)$/i', $header, $matches)) {
-            throw new HttpException('Authentication is required.', 401);
-        }
-        try {
-            $auth = $this->supabase->authUser($matches[1]);
-        } catch (Throwable) {
-            throw new HttpException('Authentication token is invalid.', 401);
-        }
-        $authId = (string) ($auth['id'] ?? '');
-        $users = $this->supabase->service('GET', '/rest/v1/users?select=id,is_active,is_super_admin&auth_user_id=eq.' . rawurlencode($authId));
-        $user = $users[0] ?? null;
-        if (!is_array($user) || ($user['is_active'] ?? false) !== true) {
-            throw new HttpException('User account is inactive or not provisioned.', 403);
-        }
-        return $user;
+        return $this->auth->resolve();
     }
 
     /** @return array<string, mixed> */

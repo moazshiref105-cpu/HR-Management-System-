@@ -1,14 +1,14 @@
 <?php
 declare(strict_types=1);
 namespace Hms\Backend;
-use RuntimeException; use Throwable;
+use RuntimeException;
 
 /** Safe, server-owned HR analytics queries. Metric and dimension keys never become SQL expressions. */
 final class DashboardApi {
-  private function __construct(private readonly SupabaseClient $supabase) {}
-  public static function fromEnvironment(): self { $url=rtrim((string)getenv('SUPABASE_URL'),'/');$key=(string)getenv('SUPABASE_SECRET_KEY');if(!filter_var($url,FILTER_VALIDATE_URL)||$key===''||!function_exists('curl_init'))throw new RuntimeException('Server configuration is incomplete.');return new self(new SupabaseClient($url,$key)); }
+  private function __construct(private readonly SupabaseClient $supabase,private readonly AuthenticatedActorResolver $auth) {}
+  public static function fromEnvironment(): self { $url=rtrim((string)getenv('SUPABASE_URL'),'/');$key=(string)getenv('SUPABASE_SECRET_KEY');if(!filter_var($url,FILTER_VALIDATE_URL)||$key===''||!function_exists('curl_init'))throw new RuntimeException('Server configuration is incomplete.');$supabase=new SupabaseClient($url,$key);return new self($supabase,AuthenticatedActorResolver::fromEnvironment($supabase,$url)); }
   public function dispatch(string $method,string $uri): never { if($method!=='GET')throw new HttpException('Route not found.',404);parse_str((string)parse_url($uri,PHP_URL_QUERY),$q);$actor=$this->actor();$route=array_slice(explode('/',trim((string)parse_url($uri,PHP_URL_PATH),'/')),2);$result=match($route[0]??''){ 'summary'=>$this->summary($q,$actor),'analysis'=>$this->analysis($q,$actor),'employees'=>$this->employees($q,$actor),'trend'=>$this->trend($q,$actor),'attention'=>$this->attention($q,$actor),'overview'=>$this->overview($q,$actor),'secondary'=>$this->secondary($q,$actor),'executive'=>$this->executive($q,$actor),'filter-options'=>$this->filterOptions($actor),'dimensions','options'=>$this->dimensions($actor),default=>throw new HttpException('Route not found.',404)};header('Content-Type: application/json; charset=utf-8');echo json_encode(['data'=>$result],JSON_THROW_ON_ERROR);exit; }
-  private function actor():array{$h=$_SERVER['HTTP_AUTHORIZATION']??'';if(!preg_match('/^Bearer\s+(.+)$/i',$h,$m))throw new HttpException('Authentication is required.',401);try{$a=$this->supabase->authUser($m[1]);}catch(Throwable){throw new HttpException('Authentication token is invalid.',401);}$u=$this->supabase->service('GET','/rest/v1/users?select=id,is_active,is_super_admin&auth_user_id=eq.'.rawurlencode((string)($a['id']??'')))[0]??null;if(!is_array($u)||!($u['is_active']??false))throw new HttpException('User account is inactive or not provisioned.',403);$this->allow($u,'dashboard.view');return $u;}
+  private function actor():array{$u=$this->auth->resolve();$this->allow($u,'dashboard.view');return $u;}
   private function can(array $a,string $p):bool{return $this->canMany($a,[$p])[$p];}
   private function canMany(array $a,array $permissions):array{if(($a['is_super_admin']??false)===true)return array_fill_keys($permissions,true);$requests=[];foreach($permissions as $permission)$requests[]=['method'=>'POST','path'=>'/rest/v1/rpc/user_has_permission','payload'=>['p_user_id'=>$a['id'],'p_permission_key'=>$permission]];$responses=$this->supabase->serviceBatch($requests);$result=[];foreach($permissions as $index=>$permission)$result[$permission]=($responses[$index]??false)===true;return $result;}
   private function allow(array $a,string $p):void{if(!$this->can($a,$p))throw new HttpException('You are not authorized for this action.',403);}

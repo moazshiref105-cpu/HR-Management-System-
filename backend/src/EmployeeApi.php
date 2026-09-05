@@ -6,7 +6,6 @@ namespace Hms\Backend;
 
 use DateTimeImmutable;
 use RuntimeException;
-use Throwable;
 
 /** Domain API for Employees. It deliberately owns validation and calculated HR rules. */
 final class EmployeeApi
@@ -23,14 +22,18 @@ final class EmployeeApi
     private const FINANCIAL = ['bank_id', 'bank_account_number'];
     private const LEAVING = ['employee_status', 'leaving_date', 'leaving_reason_id', 'leaving_comment', 'annual_days_settled', 'form_6_incoming_number', 'form_6_incoming_date', 'form_6_reason'];
 
-    private function __construct(private readonly SupabaseClient $supabase) {}
+    private function __construct(
+        private readonly SupabaseClient $supabase,
+        private readonly AuthenticatedActorResolver $auth,
+    ) {}
 
     public static function fromEnvironment(): self
     {
         $url = rtrim((string) getenv('SUPABASE_URL'), '/');
         $key = (string) getenv('SUPABASE_SECRET_KEY');
         if (filter_var($url, FILTER_VALIDATE_URL) === false || $key === '' || !function_exists('curl_init')) throw new RuntimeException('Server configuration is incomplete.');
-        return new self(new SupabaseClient($url, $key));
+        $supabase = new SupabaseClient($url, $key);
+        return new self($supabase, AuthenticatedActorResolver::fromEnvironment($supabase, $url));
     }
 
     public function dispatch(string $method, string $requestUri): never
@@ -71,14 +74,7 @@ final class EmployeeApi
     /** @param array<string,mixed> $actor */
     private function actor(): array
     {
-        $header = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
-        if (!preg_match('/^Bearer\s+(.+)$/i', $header, $match)) throw new HttpException('Authentication is required.', 401);
-        try { $auth = $this->supabase->authUser($match[1]); } catch (Throwable) { throw new HttpException('Authentication token is invalid.', 401); }
-        $id = (string) ($auth['id'] ?? '');
-        $users = $this->supabase->service('GET', '/rest/v1/users?select=id,is_active,is_super_admin&auth_user_id=eq.' . rawurlencode($id));
-        $user = $users[0] ?? null;
-        if (!is_array($user) || ($user['is_active'] ?? false) !== true) throw new HttpException('User account is inactive or not provisioned.', 403);
-        return $user;
+        return $this->auth->resolve();
     }
     /** @return array<string,mixed> */
     private function body(): array { $raw = file_get_contents('php://input'); if ($raw === false || $raw === '') return []; $body = json_decode($raw, true, 512, JSON_THROW_ON_ERROR); if (!is_array($body)) throw new RuntimeException('JSON object expected.'); return $body; }
