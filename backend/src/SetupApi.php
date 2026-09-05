@@ -102,19 +102,24 @@ final class SetupApi
             $body = array_intersect_key($body, array_flip(['full_name', 'phone']));
             if ($body === []) throw new RuntimeException('At least one editable field is required.');
             if (array_key_exists('full_name', $body) && trim((string) $body['full_name']) === '') throw new RuntimeException('full_name cannot be blank.');
-            $body['updated_at'] = gmdate('c');
-            return $this->supabase->service('PATCH', '/rest/v1/users?id=eq.' . rawurlencode($id), $body, ['Prefer: return=representation']);
+            $expectedUpdatedAt = $this->expectedUpdatedAt($body['expected_updated_at'] ?? null);
+            $updated = $this->supabase->service('PATCH', $this->userVersionPath($id, $expectedUpdatedAt), $body, ['Prefer: return=representation']);
+            if (!isset($updated[0]) || !is_array($updated[0])) $this->throwUserUpdateFailure($id);
+            return $updated[0];
         }
         if ($method === 'PATCH' && ($route[1] ?? '') === 'status') {
             $active = $body['is_active'] ?? null;
             if (!is_bool($active)) throw new RuntimeException('is_active must be boolean.');
             $this->allow($actor, $active ? 'users.edit' : 'users.deactivate');
             if (!$active) $this->assertNotSuperAdmin($id);
-            return $this->supabase->service('PATCH', '/rest/v1/users?id=eq.' . rawurlencode($id), ['is_active' => $active], ['Prefer: return=representation']);
+            $expectedUpdatedAt = $this->expectedUpdatedAt($body['expected_updated_at'] ?? null);
+            $updated = $this->supabase->service('PATCH', $this->userVersionPath($id, $expectedUpdatedAt), ['is_active' => $active], ['Prefer: return=representation']);
+            if (!isset($updated[0]) || !is_array($updated[0])) $this->throwUserUpdateFailure($id);
+            return $updated[0];
         }
         if (in_array($method, ['PUT', 'DELETE'], true) && ($route[1] ?? '') === 'roles') {
             $this->allow($actor, 'users.edit');
-            if ($method === 'PUT') return $this->replaceRelations('user_roles', 'user_id', $id, 'role_id', $body['role_ids'] ?? [], $actor['id']);
+            if ($method === 'PUT') return $this->replaceRelations('user_roles', 'user_id', $id, 'role_id', $body['role_ids'] ?? [], $actor['id'], $body['expected_updated_at'] ?? null);
             $roleId = (int) ($route[2] ?? 0);
             return $this->supabase->service('DELETE', '/rest/v1/user_roles?user_id=eq.' . rawurlencode($id) . '&role_id=eq.' . $roleId);
         }
@@ -137,7 +142,7 @@ final class SetupApi
                 'id' => $authId, 'auth_user_id' => $authId, 'full_name' => $name, 'email' => $email,
                 'phone' => $body['phone'] ?? null, 'is_active' => true, 'is_super_admin' => false, 'created_by' => $actor['id'],
             ]], ['Prefer: return=representation']);
-            $this->replaceRelations('user_roles', 'user_id', $authId, 'role_id', $body['role_ids'] ?? [], $actor['id']);
+            $this->replaceRelations('user_roles', 'user_id', $authId, 'role_id', $body['role_ids'] ?? [], $actor['id'], $user[0]['updated_at'] ?? null);
             return $user;
         } catch (Throwable $exception) {
             try { $this->supabase->service('DELETE', '/auth/v1/admin/users/' . rawurlencode($authId) . '?should_soft_delete=false'); } catch (Throwable) {}
@@ -152,8 +157,15 @@ final class SetupApi
         if ($method === 'POST' && $route === []) { $this->allow($actor, 'roles.create'); return $this->supabase->service('POST', '/rest/v1/roles', [[ 'name' => $this->required($body, 'name'), 'description' => $body['description'] ?? null, 'created_by' => $actor['id'] ]], ['Prefer: return=representation']); }
         $id = (int) ($route[0] ?? 0); if ($id < 1) throw new RuntimeException('Role ID is required.');
         if ($method === 'PATCH' && count($route) === 1) { $this->allow($actor, 'roles.edit'); $body = array_intersect_key($body, array_flip(['name', 'description'])); if ($body === []) throw new RuntimeException('At least one editable field is required.'); if (array_key_exists('name', $body) && trim((string) $body['name']) === '') throw new RuntimeException('name cannot be blank.'); return $this->supabase->service('PATCH', '/rest/v1/roles?id=eq.' . $id, $body, ['Prefer: return=representation']); }
-        if ($method === 'PATCH' && ($route[1] ?? '') === 'status') { $this->allow($actor, 'roles.edit'); if (!is_bool($body['is_active'] ?? null)) throw new RuntimeException('is_active must be boolean.'); return $this->supabase->service('PATCH', '/rest/v1/roles?id=eq.' . $id, ['is_active' => $body['is_active']], ['Prefer: return=representation']); }
-        if (in_array($method, ['PUT', 'DELETE'], true) && ($route[1] ?? '') === 'permissions') { $this->allow($actor, 'roles.edit'); if ($method === 'PUT') return $this->replaceRelations('role_permissions', 'role_id', (string) $id, 'permission_id', $body['permission_ids'] ?? [], $actor['id']); $permissionId = (int) ($route[2] ?? 0); return $this->supabase->service('DELETE', '/rest/v1/role_permissions?role_id=eq.' . $id . '&permission_id=eq.' . $permissionId); }
+        if ($method === 'PATCH' && ($route[1] ?? '') === 'status') {
+            $this->allow($actor, 'roles.edit');
+            if (!is_bool($body['is_active'] ?? null)) throw new RuntimeException('is_active must be boolean.');
+            $expectedUpdatedAt = $this->expectedUpdatedAt($body['expected_updated_at'] ?? null);
+            $updated = $this->supabase->service('PATCH', '/rest/v1/roles?id=eq.' . $id . '&updated_at=eq.' . rawurlencode($expectedUpdatedAt), ['is_active' => $body['is_active']], ['Prefer: return=representation']);
+            if (!isset($updated[0]) || !is_array($updated[0])) $this->throwRoleUpdateFailure($id);
+            return $updated[0];
+        }
+        if (in_array($method, ['PUT', 'DELETE'], true) && ($route[1] ?? '') === 'permissions') { $this->allow($actor, 'roles.edit'); if ($method === 'PUT') return $this->replaceRelations('role_permissions', 'role_id', (string) $id, 'permission_id', $body['permission_ids'] ?? [], $actor['id'], $body['expected_updated_at'] ?? null); $permissionId = (int) ($route[2] ?? 0); return $this->supabase->service('DELETE', '/rest/v1/role_permissions?role_id=eq.' . $id . '&permission_id=eq.' . $permissionId); }
         throw new HttpException('Route not found.', 404);
     }
 
@@ -206,25 +218,68 @@ final class SetupApi
     }
     private function isUuid(string $value): bool { return preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $value) === 1; }
     /** @param array<mixed> $ids @return array<mixed> */
-    private function replaceRelations(string $table, string $ownerColumn, string $ownerId, string $itemColumn, array $ids, string $actorId): array
+    private function replaceRelations(string $table, string $ownerColumn, string $ownerId, string $itemColumn, array $ids, string $actorId, mixed $expectedUpdatedAt = null): array
     {
         foreach ($ids as $id) {
             if (!is_int($id) && !ctype_digit((string) $id)) throw new RuntimeException('Relation IDs must be integers.');
         }
         $ids = array_values(array_unique(array_map('intval', $ids)));
+        $version = $this->expectedUpdatedAt($expectedUpdatedAt);
         if ($table === 'user_roles') {
-            $this->supabase->service('POST', '/rest/v1/rpc/replace_setup_user_roles', [
-                'p_user_id' => $ownerId, 'p_role_ids' => $ids, 'p_created_by' => $actorId,
-            ]);
-            return [];
+            try {
+                $updatedAt = $this->supabase->service('POST', '/rest/v1/rpc/replace_setup_user_roles', [
+                    'p_user_id' => $ownerId, 'p_role_ids' => $ids, 'p_created_by' => $actorId, 'p_expected_updated_at' => $version,
+                ]);
+            } catch (SupabaseRequestException $exception) {
+                $this->mapAccessConcurrencyError($exception, 'HMS_USER_', 'User access');
+                throw $exception;
+            }
+            return ['updated_at' => $updatedAt];
         }
         if ($table === 'role_permissions') {
-            $this->supabase->service('POST', '/rest/v1/rpc/replace_setup_role_permissions', [
-                'p_role_id' => (int) $ownerId, 'p_permission_ids' => $ids,
-            ]);
-            return [];
+            try {
+                $updatedAt = $this->supabase->service('POST', '/rest/v1/rpc/replace_setup_role_permissions', [
+                    'p_role_id' => (int) $ownerId, 'p_permission_ids' => $ids, 'p_expected_updated_at' => $version,
+                ]);
+            } catch (SupabaseRequestException $exception) {
+                $this->mapAccessConcurrencyError($exception, 'HMS_ROLE_', 'Role');
+                throw $exception;
+            }
+            return ['updated_at' => $updatedAt];
         }
         throw new RuntimeException('Unsupported relation table.');
+    }
+    private function expectedUpdatedAt(mixed $value): string
+    {
+        if (!is_string($value) || !preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/', $value)) throw new RuntimeException('expected_updated_at must be a valid timestamp.');
+        try { new \DateTimeImmutable($value); } catch (\Throwable) { throw new RuntimeException('expected_updated_at must be a valid timestamp.'); }
+        return $value;
+    }
+    private function throwUserUpdateFailure(string $id): never
+    {
+        $exists = $this->supabase->service('GET', '/rest/v1/users?select=id&id=eq.' . rawurlencode($id) . '&limit=1');
+        if (!isset($exists[0])) throw new HttpException('User not found.', 404);
+        throw new HttpException('User access was updated by another administrator.', 409, 'user_access_conflict');
+    }
+    private function throwRoleUpdateFailure(int $id): never
+    {
+        $exists = $this->supabase->service('GET', '/rest/v1/roles?select=id&id=eq.' . $id . '&limit=1');
+        if (!isset($exists[0])) throw new HttpException('Role not found.', 404);
+        throw new HttpException('Role was updated by another administrator.', 409, 'role_conflict');
+    }
+    private function userVersionPath(string $id, string $expectedUpdatedAt): string
+    {
+        return '/rest/v1/users?id=eq.' . rawurlencode($id) . '&updated_at=eq.' . rawurlencode($expectedUpdatedAt);
+    }
+    private function mapAccessConcurrencyError(SupabaseRequestException $exception, string $prefix, string $resource): never
+    {
+        $identifier = $exception->identifier ?? '';
+        if ($identifier === $prefix . 'NOT_FOUND') throw new HttpException("{$resource} not found.", 404);
+        if ($identifier === $prefix . 'CONFLICT') {
+            $code = $prefix === 'HMS_ROLE_' ? 'role_conflict' : 'user_access_conflict';
+            throw new HttpException("{$resource} was updated by another administrator.", 409, $code);
+        }
+        throw $exception;
     }
     /** @param array<string, mixed> $body */
     private function required(array $body, string $key): string { $value = trim((string) ($body[$key] ?? '')); if ($value === '') throw new RuntimeException("{$key} is required."); return $value; }

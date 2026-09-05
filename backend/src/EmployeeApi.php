@@ -177,8 +177,23 @@ final class EmployeeApi
         $this->allow($actor, $permission);
         $table = 'employee_' . $resource;
         $id = (int) ($route[0] ?? 0);
-        if ($method === 'POST' && $route === []) { $record = $this->nestedRecord($resource, $body, $actor, true); $record['employee_id'] = $employeeId; $result = $this->supabase->service('POST', '/rest/v1/' . $table, [$record], ['Prefer: return=representation']); $this->refresh($employeeId, $actor); return $result; }
-        if ($method === 'PATCH' && $id > 0) { $record = $this->nestedRecord($resource, $body, $actor, false); if ($record === []) throw new RuntimeException('At least one editable field is required.'); $result = $this->supabase->service('PATCH', '/rest/v1/' . $table . '?id=eq.' . $id . '&employee_id=eq.' . rawurlencode($employeeId), $record, ['Prefer: return=representation']); $this->refresh($employeeId, $actor); return $result; }
+        if ($method === 'POST' && $route === []) {
+            $record = $this->nestedRecord($resource, $body, $actor, true);
+            $record['employee_id'] = $employeeId;
+            $result = $this->supabase->service('POST', '/rest/v1/' . $table, [$record], ['Prefer: return=representation']);
+            $this->refreshNotificationsSafely($employeeId);
+            return $result;
+        }
+        if ($method === 'PATCH' && $id > 0) {
+            $record = $this->nestedRecord($resource, $body, $actor, false);
+            if ($record === []) throw new RuntimeException('At least one editable field is required.');
+            $expectedUpdatedAt = $this->expectedUpdatedAt($body['expected_updated_at'] ?? null);
+            $path = '/rest/v1/' . $table . '?id=eq.' . $id . '&employee_id=eq.' . rawurlencode($employeeId) . '&updated_at=eq.' . rawurlencode($expectedUpdatedAt);
+            $result = $this->supabase->service('PATCH', $path, $record, ['Prefer: return=representation']);
+            if (!isset($result[0]) || !is_array($result[0])) $this->throwNestedUpdateFailure($table, $employeeId, $id, $resource);
+            $this->refreshNotificationsSafely($employeeId);
+            return $result;
+        }
         throw new HttpException('Route not found.', 404);
     }
 
@@ -228,6 +243,14 @@ final class EmployeeApi
         $exists = $this->supabase->service('GET', '/rest/v1/employees?select=id&id=eq.' . rawurlencode($id) . '&limit=1');
         if (!isset($exists[0])) throw new HttpException('Employee not found.', 404);
         throw new HttpException('Employee data has changed since you opened it.', 409, 'employee_conflict');
+    }
+
+    private function throwNestedUpdateFailure(string $table, string $employeeId, int $id, string $resource): never
+    {
+        $exists = $this->supabase->service('GET', '/rest/v1/' . $table . '?select=id&id=eq.' . $id . '&employee_id=eq.' . rawurlencode($employeeId) . '&limit=1');
+        if (!isset($exists[0])) throw new HttpException('Employee record not found.', 404);
+        $code = $resource === 'licenses' ? 'employee_license_conflict' : 'employee_child_conflict';
+        throw new HttpException('This record was updated by another user.', 409, $code);
     }
 
     /** @param array<string,mixed> $row @return array{id:string,updated_at:string} */

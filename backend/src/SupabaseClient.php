@@ -109,7 +109,10 @@ final class SupabaseClient
             throw new RuntimeException('Supabase request failed.');
         }
         if ($status < 200 || $status >= 300) {
-            throw new RuntimeException("Supabase request failed with HTTP {$status}.");
+            $decoded = json_decode($body, true);
+            $message = is_array($decoded) && is_string($decoded['message'] ?? null) ? $decoded['message'] : null;
+            $identifier = $message !== null && str_starts_with($message, 'HMS_') ? $message : null;
+            throw new SupabaseRequestException($status, $identifier);
         }
         return $body === '' ? [] : json_decode($body, true, 512, JSON_THROW_ON_ERROR);
     }
