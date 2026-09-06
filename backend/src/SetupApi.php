@@ -134,20 +134,64 @@ final class SetupApi
         $name = trim((string) ($body['full_name'] ?? ''));
         $password = (string) ($body['password'] ?? '');
         if (filter_var($email, FILTER_VALIDATE_EMAIL) === false || $name === '' || strlen($password) < 12) throw new RuntimeException('Valid email, full_name, and a 12-character password are required.');
-        $auth = $this->supabase->service('POST', '/auth/v1/admin/users', ['email' => $email, 'password' => $password, 'email_confirm' => true]);
-        $authId = (string) (($auth['user']['id'] ?? null) ?: ($auth['id'] ?? ''));
-        if (!$this->isUuid($authId)) throw new RuntimeException('Supabase Auth did not return a valid user ID.');
+        $roleIds = $this->validatedCreateRoleIds($body['role_ids'] ?? []);
+        $this->assertApplicationEmailAvailable($email);
         try {
-            $user = $this->supabase->service('POST', '/rest/v1/users', [[
-                'id' => $authId, 'auth_user_id' => $authId, 'full_name' => $name, 'email' => $email,
-                'phone' => $body['phone'] ?? null, 'is_active' => true, 'is_super_admin' => false, 'created_by' => $actor['id'],
-            ]], ['Prefer: return=representation']);
-            $this->replaceRelations('user_roles', 'user_id', $authId, 'role_id', $body['role_ids'] ?? [], $actor['id'], $user[0]['updated_at'] ?? null);
-            return $user;
-        } catch (Throwable $exception) {
-            try { $this->supabase->service('DELETE', '/auth/v1/admin/users/' . rawurlencode($authId) . '?should_soft_delete=false'); } catch (Throwable) {}
-            throw $exception;
+            $auth = $this->supabase->service('POST', '/auth/v1/admin/users', ['email' => $email, 'password' => $password, 'email_confirm' => true]);
+        } catch (SupabaseRequestException $exception) {
+            if ($exception->identifier === 'AUTH_EMAIL_EXISTS') {
+                throw new HttpException('A user with this email already exists.', 409, 'user_email_conflict');
+            }
+            throw new HttpException('Unable to create the authentication account.', 500, 'user_auth_creation_failed');
         }
+        $authId = (string) (($auth['user']['id'] ?? null) ?: ($auth['id'] ?? ''));
+        if (!$this->isUuid($authId)) {
+            error_log('HMS user provisioning reconciliation required operation=create_user_missing_auth_user_id');
+            throw new HttpException('User creation could not be completed safely. Administrator review is required.', 500, 'user_provisioning_reconciliation_required');
+        }
+        try {
+            $result = $this->supabase->service('POST', '/rest/v1/rpc/provision_setup_user', [
+                'p_auth_user_id' => $authId,
+                'p_email' => $email,
+                'p_full_name' => $name,
+                'p_phone' => $body['phone'] ?? null,
+                'p_role_ids' => $roleIds,
+                'p_created_by' => $actor['id'],
+            ]);
+            if (!isset($result[0]) || !is_array($result[0])) throw new RuntimeException('User provisioning did not return the created user.');
+            return $result[0];
+        } catch (Throwable $exception) {
+            try {
+                $this->supabase->service('DELETE', '/auth/v1/admin/users/' . rawurlencode($authId) . '?should_soft_delete=false');
+            } catch (Throwable) {
+                error_log('HMS user provisioning reconciliation required auth_user_id=' . $authId . ' operation=create_user');
+                throw new HttpException('User creation could not be completed safely. Administrator review is required.', 500, 'user_provisioning_reconciliation_required');
+            }
+            if ($exception instanceof SupabaseRequestException && $exception->identifier === 'HMS_APPLICATION_EMAIL_CONFLICT') {
+                throw new HttpException('A user with this email already exists.', 409, 'user_email_conflict');
+            }
+            throw new HttpException('User provisioning could not be completed.', 500, 'user_provisioning_failed');
+        }
+    }
+
+    /** @return list<int> */
+    private function validatedCreateRoleIds(mixed $value): array
+    {
+        if (!is_array($value)) throw new RuntimeException('role_ids must be an array.');
+        foreach ($value as $id) {
+            if (!is_int($id) && !ctype_digit((string) $id)) throw new RuntimeException('Role IDs must be integers.');
+        }
+        $roleIds = array_values(array_unique(array_map('intval', $value)));
+        if ($roleIds === []) return [];
+        $roles = $this->supabase->service('GET', '/rest/v1/roles?select=id&id=in.(' . implode(',', $roleIds) . ')&is_active=eq.true');
+        if (!is_array($roles) || count($roles) !== count($roleIds)) throw new RuntimeException('Roles must exist and be active.');
+        return $roleIds;
+    }
+
+    private function assertApplicationEmailAvailable(string $email): void
+    {
+        $users = $this->supabase->service('GET', '/rest/v1/users?select=id&email=eq.' . rawurlencode($email) . '&limit=1');
+        if (isset($users[0])) throw new HttpException('A user with this email already exists.', 409, 'user_email_conflict');
     }
 
     /** @param array<string, mixed> $body @param array<string, mixed> $actor */

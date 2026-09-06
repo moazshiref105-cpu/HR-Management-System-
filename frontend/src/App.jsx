@@ -831,12 +831,15 @@ function UserEditor({ user, roles, token, toast, onClose, done, onCapabilitiesCh
         const result = await setupApi.userRoles(user.id, form.role_ids, currentVersion, token);
         setVersion(result.updated_at);
       }
-      onCapabilitiesChanged();
+      if (!isNew) onCapabilitiesChanged();
       toast(isNew ? "User created." : "User details saved.", "success");
       done();
       onClose();
     } catch (e) {
       if (!isNew && e.status === 409 && e.code === "user_access_conflict") setConflict(true);
+      else if (isNew && e.code === "user_email_conflict") toast("A user with this email already exists.", "error");
+      else if (isNew && e.code === "user_provisioning_reconciliation_required") toast("User creation could not be completed safely. Administrator review is required.", "error");
+      else if (isNew && e.code === "user_provisioning_failed") toast("User provisioning could not be completed.", "error");
       else toast(e.message, "error");
     } finally {
       setBusy(false);

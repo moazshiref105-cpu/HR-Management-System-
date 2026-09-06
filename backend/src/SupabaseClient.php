@@ -111,7 +111,11 @@ final class SupabaseClient
         if ($status < 200 || $status >= 300) {
             $decoded = json_decode($body, true);
             $message = is_array($decoded) && is_string($decoded['message'] ?? null) ? $decoded['message'] : null;
+            $code = is_array($decoded) && is_string($decoded['code'] ?? null) ? $decoded['code'] : null;
             $identifier = $message !== null && str_starts_with($message, 'HMS_') ? $message : null;
+            if ($identifier === null && str_starts_with($path, '/auth/v1/admin/users') && $code === 'email_exists') {
+                $identifier = 'AUTH_EMAIL_EXISTS';
+            }
             throw new SupabaseRequestException($status, $identifier);
         }
         return $body === '' ? [] : json_decode($body, true, 512, JSON_THROW_ON_ERROR);
