@@ -67,17 +67,55 @@ export const setupApi = {
   patchInsurance: (key, body, t) => api(`/api/setup/insurance-settings/${key}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
 }
 
-let employeeLookupCache = null
-let employeeLookupToken = null
-let employeeLookupPromise = null
+export const EMPLOYEE_LOOKUP_CACHE_TTL_MS = 60_000
+let employeeLookupCache = { token: null, data: null, expiresAt: 0, promise: null }
+const employeeLookupListeners = new Set()
+export const invalidateEmployeeLookupCache = () => {
+  employeeLookupCache = { token: null, data: null, expiresAt: 0, promise: null }
+  employeeLookupListeners.forEach((listener) => listener())
+}
+export const subscribeEmployeeLookupInvalidation = (listener) => {
+  employeeLookupListeners.add(listener)
+  return () => employeeLookupListeners.delete(listener)
+}
 export const employeeLookupApi = {
   get: (token) => {
-    if (employeeLookupToken !== token) { employeeLookupCache = null; employeeLookupToken = token; employeeLookupPromise = null }
-    if (employeeLookupCache) return Promise.resolve(employeeLookupCache)
-    if (!employeeLookupPromise) employeeLookupPromise = setupApi.employeeFormOptions(token).then((data) => (employeeLookupCache = data)).finally(() => { employeeLookupPromise = null })
-    return employeeLookupPromise
+    if (employeeLookupCache.token !== token) employeeLookupCache = { token, data: null, expiresAt: 0, promise: null }
+    const cache = employeeLookupCache
+    if (cache.data && cache.expiresAt > Date.now()) return Promise.resolve(cache.data)
+    if (!cache.promise) {
+      cache.promise = setupApi.employeeFormOptions(token)
+        .then((data) => {
+          if (employeeLookupCache === cache) {
+            cache.data = data
+            cache.expiresAt = Date.now() + EMPLOYEE_LOOKUP_CACHE_TTL_MS
+          }
+          return data
+        })
+        .finally(() => { if (employeeLookupCache === cache) cache.promise = null })
+    }
+    return cache.promise
   },
-  invalidate: () => { employeeLookupCache = null; employeeLookupPromise = null },
+  invalidate: invalidateEmployeeLookupCache,
+}
+
+const dashboardListeners = new Set()
+let dashboardInvalidationQueued = false
+let dashboardFilterOptionsStale = false
+export const invalidateDashboardData = ({ filterOptions = false } = {}) => {
+  dashboardFilterOptionsStale ||= filterOptions
+  if (dashboardInvalidationQueued) return
+  dashboardInvalidationQueued = true
+  queueMicrotask(() => {
+    dashboardInvalidationQueued = false
+    const event = { filterOptions: dashboardFilterOptionsStale }
+    dashboardFilterOptionsStale = false
+    dashboardListeners.forEach((listener) => listener(event))
+  })
+}
+export const subscribeDashboardInvalidation = (listener) => {
+  dashboardListeners.add(listener)
+  return () => dashboardListeners.delete(listener)
 }
 
 const CAPABILITIES_TTL_MS = 30_000

@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import logo from "../assets/images/jushi-logo.png";
 import { authConfigured, supabase } from "./auth";
-import { capabilitiesApi, employeesApi, invalidateCapabilitiesCache, setupApi } from "./api";
+import { capabilitiesApi, employeesApi, invalidateCapabilitiesCache, invalidateDashboardData, invalidateEmployeeLookupCache, setupApi } from "./api";
 import { EmployeeDetail, EmployeeForm, EmployeesList } from "./Employees";
 import { Dashboard } from "./Dashboard";
 
@@ -69,6 +69,16 @@ const groups = [
     items: [["insurance", "Open settings"]],
   },
 ];
+
+const employeeLookupResources = new Set([
+  "religions", "marital-statuses", "diplomas", "governorates", "departments",
+  "shift-types", "teams", "positions", "projects", "banks", "leaving-reasons",
+  "license-types",
+]);
+const dashboardFilterResources = new Set([
+  "religions", "marital-statuses", "diplomas", "governorates", "departments",
+  "shift-types", "teams", "positions", "projects", "banks", "leaving-reasons",
+]);
 const labels = Object.fromEntries(groups.flatMap((g) => g.items));
 const titleCase = (s) => labels[s] || s;
 const initials = (name = "") =>
@@ -419,6 +429,8 @@ function MasterData({ resource, token, toast }) {
       if (editor?.id)
         await setupApi.patchMaster(resource, editor.id, body, token);
       else await setupApi.createMaster(resource, body, token);
+      if (employeeLookupResources.has(resource)) invalidateEmployeeLookupCache();
+      if (dashboardFilterResources.has(resource)) invalidateDashboardData({ filterOptions: true });
       toast(`${titleCase(resource)} saved.`, "success");
       setEditor(null);
       load();
@@ -432,6 +444,8 @@ function MasterData({ resource, token, toast }) {
     setBusy(true);
     try {
       await setupApi.masterStatus(resource, confirm.id, isActive, token);
+      if (employeeLookupResources.has(resource)) invalidateEmployeeLookupCache();
+      if (dashboardFilterResources.has(resource)) invalidateDashboardData({ filterOptions: true });
       toast(
         `${confirm.name} is now ${isActive ? "active" : "inactive"}.`,
         "success",
@@ -989,6 +1003,7 @@ function Insurance({ token, toast }) {
           ),
         ),
       );
+      invalidateDashboardData();
       toast("Insurance settings saved.", "success");
       setDraft({});
       setEditing(false);
@@ -1225,13 +1240,16 @@ export default function App() {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_e, s) => {
-      if (!s) invalidateCapabilitiesCache();
+    if (!s) {
+      invalidateCapabilitiesCache();
+      invalidateEmployeeLookupCache();
+    }
       setSession(s);
     });
     return () => subscription.unsubscribe();
   }, []);
   return session ? (
-    <AppShell session={session} onLogout={() => { invalidateCapabilitiesCache(); supabase.auth.signOut(); }} />
+    <AppShell session={session} onLogout={() => { invalidateCapabilitiesCache(); invalidateEmployeeLookupCache(); supabase.auth.signOut(); }} />
   ) : (
     <Login onSession={setSession} />
   );

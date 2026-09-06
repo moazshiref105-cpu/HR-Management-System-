@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BarChart3, ChevronRight, Filter, Search, X } from "lucide-react";
-import { dashboardApi } from "./api";
+import { dashboardApi, subscribeDashboardInvalidation } from "./api";
 
 const labels = {
   total_employees: "Total Employees",
@@ -175,6 +175,7 @@ export function Dashboard({ token, go }) {
   const [secondaryLoading, setSecondaryLoading] = useState(false);
   const [secondaryMetric, setSecondaryMetric] = useState(null);
   const [loadError, setLoadError] = useState("");
+  const [freshnessVersion, setFreshnessVersion] = useState(0);
   const lookupLoaded = useRef(false);
   const optionsLoaded = useRef(false);
   const requestId = useRef(0);
@@ -192,6 +193,11 @@ export function Dashboard({ token, go }) {
   const validGranularities = useMemo(() => { const values = ["auto"]; if (rangeDays <= 120) values.push("day", "week"); if (rangeDays > 31) values.push("month"); if (rangeDays > 120) values.push("quarter"); if (rangeDays > 548) values.push("year"); return values; }, [rangeDays]);
   const effectiveGranularity = granularity === "auto" ? (rangeDays <= 31 ? "day" : rangeDays <= 120 ? "week" : rangeDays <= 548 ? "month" : rangeDays <= 1825 ? "quarter" : "year") : granularity;
   useEffect(() => { if (!validGranularities.includes(granularity)) setGranularity("auto"); }, [validGranularities, granularity]);
+
+  useEffect(() => subscribeDashboardInvalidation(({ filterOptions }) => {
+    if (filterOptions) lookupLoaded.current = false;
+    setFreshnessVersion((current) => current + 1);
+  }), []);
 
   useEffect(() => {
     optionsLoaded.current = false;
@@ -244,7 +250,7 @@ export function Dashboard({ token, go }) {
       .filterOptions(token)
       .then((next) => setLookups((current) => ({ ...current, ...next })))
       .catch(() => { lookupLoaded.current = false; });
-  }, [showMoreFilters, token, coreLoading]);
+  }, [showMoreFilters, token, coreLoading, freshnessVersion]);
 
   useEffect(() => {
     if (!historyReady || !location.hash.startsWith("#dashboard")) return;
@@ -301,6 +307,7 @@ export function Dashboard({ token, go }) {
     state.page,
     JSON.stringify(drill),
     historyReady,
+    freshnessVersion,
   ]);
 
   useEffect(() => {
@@ -309,7 +316,7 @@ export function Dashboard({ token, go }) {
     setExecutiveLoading(true);
     dashboardApi.executive({ ...query, granularity: effectiveGranularity }, token).then((next) => { if (active) setExecutive(next); }).catch(() => {}).finally(() => { if (active) setExecutiveLoading(false); });
     return () => { active = false; };
-  }, [token, JSON.stringify(query), effectiveGranularity, historyReady]);
+  }, [token, JSON.stringify(query), effectiveGranularity, historyReady, freshnessVersion]);
 
   const update = (key, value) =>
     setState((current) => ({
