@@ -254,7 +254,6 @@ final class AuthenticatedActorResolver
         ]);
         $body = curl_exec($curl);
         $status = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
-        curl_close($curl);
         if (!is_string($body) || $status < 200 || $status >= 300) {
             throw new RuntimeException('JWKS request failed.');
         }

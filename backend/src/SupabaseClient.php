@@ -100,6 +100,21 @@ final class SupabaseClient
         }
     }
 
+    /** @param array<string, mixed> $payload */
+    public function publishPrivateBroadcast(string $topic, string $event, array $payload): void
+    {
+        if (!preg_match('/^user-security:[0-9a-f-]{36}$/i', $topic) || $event !== 'security_invalidated') {
+            throw new RuntimeException('Invalid private broadcast target.');
+        }
+        $this->request(
+            'POST',
+            '/realtime/v1/api/broadcast/' . rawurlencode($topic) . '/events/' . rawurlencode($event) . '?private=true',
+            $this->secretKey,
+            $payload,
+            [],
+        );
+    }
+
     private function request(string $method, string $path, string $authorization, ?array $payload, array $headers): mixed
     {
         $curl = $this->createHandle($method, $path, $authorization, $payload, $headers);

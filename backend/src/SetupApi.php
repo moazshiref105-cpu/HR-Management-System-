@@ -112,16 +112,25 @@ final class SetupApi
             if (!is_bool($active)) throw new RuntimeException('is_active must be boolean.');
             $this->allow($actor, $active ? 'users.edit' : 'users.deactivate');
             if (!$active) $this->assertNotSuperAdmin($id);
+            $authUserId = $this->securityTargetAuthUserId($id);
             $expectedUpdatedAt = $this->expectedUpdatedAt($body['expected_updated_at'] ?? null);
             $updated = $this->supabase->service('PATCH', $this->userVersionPath($id, $expectedUpdatedAt), ['is_active' => $active], ['Prefer: return=representation']);
             if (!isset($updated[0]) || !is_array($updated[0])) $this->throwUserUpdateFailure($id);
+            $this->publishSecurityInvalidation($authUserId, 'user_status');
             return $updated[0];
         }
         if (in_array($method, ['PUT', 'DELETE'], true) && ($route[1] ?? '') === 'roles') {
             $this->allow($actor, 'users.edit');
-            if ($method === 'PUT') return $this->replaceRelations('user_roles', 'user_id', $id, 'role_id', $body['role_ids'] ?? [], $actor['id'], $body['expected_updated_at'] ?? null);
+            $authUserId = $this->securityTargetAuthUserId($id);
+            if ($method === 'PUT') {
+                $result = $this->replaceRelations('user_roles', 'user_id', $id, 'role_id', $body['role_ids'] ?? [], $actor['id'], $body['expected_updated_at'] ?? null);
+                $this->publishSecurityInvalidation($authUserId, 'user_roles');
+                return $result;
+            }
             $roleId = (int) ($route[2] ?? 0);
-            return $this->supabase->service('DELETE', '/rest/v1/user_roles?user_id=eq.' . rawurlencode($id) . '&role_id=eq.' . $roleId);
+            $result = $this->supabase->service('DELETE', '/rest/v1/user_roles?user_id=eq.' . rawurlencode($id) . '&role_id=eq.' . $roleId);
+            $this->publishSecurityInvalidation($authUserId, 'user_roles');
+            return $result;
         }
         throw new HttpException('Route not found.', 404);
     }
@@ -207,9 +216,21 @@ final class SetupApi
             $expectedUpdatedAt = $this->expectedUpdatedAt($body['expected_updated_at'] ?? null);
             $updated = $this->supabase->service('PATCH', '/rest/v1/roles?id=eq.' . $id . '&updated_at=eq.' . rawurlencode($expectedUpdatedAt), ['is_active' => $body['is_active']], ['Prefer: return=representation']);
             if (!isset($updated[0]) || !is_array($updated[0])) $this->throwRoleUpdateFailure($id);
+            $this->publishRoleSecurityInvalidations($id, 'role_status');
             return $updated[0];
         }
-        if (in_array($method, ['PUT', 'DELETE'], true) && ($route[1] ?? '') === 'permissions') { $this->allow($actor, 'roles.edit'); if ($method === 'PUT') return $this->replaceRelations('role_permissions', 'role_id', (string) $id, 'permission_id', $body['permission_ids'] ?? [], $actor['id'], $body['expected_updated_at'] ?? null); $permissionId = (int) ($route[2] ?? 0); return $this->supabase->service('DELETE', '/rest/v1/role_permissions?role_id=eq.' . $id . '&permission_id=eq.' . $permissionId); }
+        if (in_array($method, ['PUT', 'DELETE'], true) && ($route[1] ?? '') === 'permissions') {
+            $this->allow($actor, 'roles.edit');
+            if ($method === 'PUT') {
+                $result = $this->replaceRelations('role_permissions', 'role_id', (string) $id, 'permission_id', $body['permission_ids'] ?? [], $actor['id'], $body['expected_updated_at'] ?? null);
+                $this->publishRoleSecurityInvalidations($id, 'role_permissions');
+                return $result;
+            }
+            $permissionId = (int) ($route[2] ?? 0);
+            $result = $this->supabase->service('DELETE', '/rest/v1/role_permissions?role_id=eq.' . $id . '&permission_id=eq.' . $permissionId);
+            $this->publishRoleSecurityInvalidations($id, 'role_permissions');
+            return $result;
+        }
         throw new HttpException('Route not found.', 404);
     }
 
@@ -246,6 +267,39 @@ final class SetupApi
         throw new HttpException('Route not found.', 404);
     }
 
+    private function securityTargetAuthUserId(string $userId): ?string
+    {
+        $users = $this->supabase->service('GET', '/rest/v1/users?select=auth_user_id&id=eq.' . rawurlencode($userId) . '&limit=1');
+        $authUserId = $users[0]['auth_user_id'] ?? null;
+        return is_string($authUserId) && $this->isUuid($authUserId) ? $authUserId : null;
+    }
+
+    private function publishRoleSecurityInvalidations(int $roleId, string $operation): void
+    {
+        try {
+            $assignments = $this->supabase->service('GET', '/rest/v1/user_roles?select=users!user_roles_user_id_fkey(auth_user_id,is_active)&role_id=eq.' . $roleId);
+            $authUserIds = [];
+            foreach ($assignments as $assignment) {
+                $user = $assignment['users'] ?? null;
+                $authUserId = is_array($user) ? ($user['auth_user_id'] ?? null) : null;
+                if (($user['is_active'] ?? false) === true && is_string($authUserId) && $this->isUuid($authUserId)) $authUserIds[$authUserId] = true;
+            }
+            foreach (array_keys($authUserIds) as $authUserId) $this->publishSecurityInvalidation($authUserId, $operation);
+        } catch (Throwable) {
+            error_log('HMS security realtime broadcast failed operation=' . $operation . ' role_id=' . $roleId);
+        }
+    }
+
+    private function publishSecurityInvalidation(?string $authUserId, string $operation): void
+    {
+        if ($authUserId === null) return;
+        try {
+            $this->supabase->publishPrivateBroadcast('user-security:' . $authUserId, 'security_invalidated', ['type' => 'security_invalidated']);
+        } catch (Throwable) {
+            error_log('HMS security realtime broadcast failed operation=' . $operation . ' auth_user_id=' . $authUserId);
+        }
+    }
+
     private function assertNotSuperAdmin(string $id): void { $user = $this->supabase->service('GET', '/rest/v1/users?select=is_super_admin&id=eq.' . rawurlencode($id)); if (($user[0]['is_super_admin'] ?? false) === true) throw new RuntimeException('The Super Admin cannot be deactivated.'); }
     /** @param array<string, mixed> $actor */
     private function permissions(string $method, array $route, array $actor): array { if ($method !== 'GET' || $route !== ['permissions']) throw new HttpException('Route not found.', 404); $this->allow($actor, 'roles.view'); $result = $this->supabase->service('GET', '/rest/v1/permissions?select=id,permission_key,module,action,description&order=module,action'); return is_array($result) ? $result : []; }
@@ -254,11 +308,22 @@ final class SetupApi
     private function capabilities(string $method, array $route, array $actor): array
     {
         if ($method !== 'GET' || $route !== ['capabilities']) throw new HttpException('Route not found.', 404);
-        $permissions = $this->supabase->service('GET', '/rest/v1/permissions?select=permission_key&order=permission_key');
-        if (!is_array($permissions)) return [];
-        $keys = array_values(array_filter(array_column($permissions, 'permission_key'), 'is_string'));
-        if (($actor['is_super_admin'] ?? false) === true) return $keys;
-        return array_values(array_filter($keys, fn (string $key): bool => $this->supabase->service('POST', '/rest/v1/rpc/user_has_permission', ['p_user_id' => $actor['id'], 'p_permission_key' => $key]) === true));
+        $rows = $this->supabase->service('POST', '/rest/v1/rpc/get_user_capabilities', ['p_user_id' => $actor['id']]);
+        return $this->capabilityKeys($rows);
+    }
+
+    /** @return list<string> */
+    private function capabilityKeys(mixed $rows): array
+    {
+        if (!is_array($rows)) throw new RuntimeException('Capabilities response is invalid.');
+        $keys = [];
+        foreach ($rows as $row) {
+            if (!is_array($row) || !array_key_exists('permission_key', $row) || !is_string($row['permission_key']) || trim($row['permission_key']) === '') {
+                throw new RuntimeException('Capabilities response is invalid.');
+            }
+            $keys[$row['permission_key']] = true;
+        }
+        return array_keys($keys);
     }
     private function isUuid(string $value): bool { return preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $value) === 1; }
     /** @param array<mixed> $ids @return array<mixed> */

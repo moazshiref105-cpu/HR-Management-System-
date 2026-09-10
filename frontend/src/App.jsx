@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   BadgeDollarSign,
@@ -1160,6 +1160,7 @@ function AppShell({ session, onLogout }) {
     [nav, setNav] = useState(false),
     [toast, setToast] = useState(null),
     [capabilities, setCapabilities] = useState([]);
+  const securityRefreshQueued = useRef(false);
   const notify = (message, kind = "success") => setToast({ message, kind });
   const loadCapabilities = () => {
     capabilitiesApi.get(session.access_token).then(setCapabilities).catch(() => setCapabilities([]));
@@ -1168,6 +1169,36 @@ function AppShell({ session, onLogout }) {
   useEffect(() => {
     loadCapabilities();
   }, [session.access_token]);
+  useEffect(() => {
+    if (!supabase || !session.user?.id) return undefined;
+    let active = true;
+    let subscribed = false;
+    const refreshSecurityState = () => {
+      if (securityRefreshQueued.current) return;
+      securityRefreshQueued.current = true;
+      queueMicrotask(() => {
+        securityRefreshQueued.current = false;
+        if (!active) return;
+        invalidateCapabilitiesCache();
+        capabilitiesApi.get(session.access_token).then(setCapabilities).catch((error) => {
+          setCapabilities([]);
+          if (error?.status === 403) onLogout();
+        });
+      });
+    };
+    const channel = supabase
+      .channel(`user-security:${session.user.id}`, { config: { private: true } })
+      .on("broadcast", { event: "security_invalidated" }, refreshSecurityState)
+      .subscribe((status) => {
+        if (!active || status !== "SUBSCRIBED") return;
+        if (subscribed) refreshSecurityState();
+        subscribed = true;
+      });
+    return () => {
+      active = false;
+      supabase.removeChannel(channel);
+    };
+  }, [session.access_token, session.user?.id, onLogout]);
   useEffect(() => {
     const onHash = () => setPage((location.hash.slice(1).split("?")[0]) || "home");
     addEventListener("hashchange", onHash);
