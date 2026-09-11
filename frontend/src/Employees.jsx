@@ -1419,31 +1419,60 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
   const insurance = employee.insurance || {};
   const comp =
     calculated.comprehensive_health_deduction || insurance.comprehensive_health;
+  const profileGroups = [
+    { label: "Overview", items: ["overview"] },
+    { label: "Personal", items: tabs.filter((item) => ["personal", "family"].includes(item)) },
+    { label: "Employment", items: tabs.filter((item) => ["work", "contracts", "notifications"].includes(item)) },
+    { label: "Benefits & records", items: tabs.filter((item) => ["financial", "insurance", "licenses"].includes(item)) },
+  ].filter((group) => group.items.length);
+  const activeGroup = profileGroups.find((group) => group.items.includes(tab)) || profileGroups[0];
+  const tabLabel = (item) => (item === "overview" ? "Overview" : labels[item]);
   return (
-    <section className="section-view employees-view">
-      <div className="profile-heading">
-        <button className="back-to-setup" onClick={() => go("employees")}>
-          <ArrowLeft size={15} />
-          Back to Employees
-        </button>
-        <div className="profile-title">
-          <span className="employee-monogram">{employee.employee_number}</span>
-          <div>
+    <section className="section-view employees-view employee-profile-view">
+      <div className="employee-profile-layout">
+        <aside className="employee-context-panel">
+          <button className="back-to-setup" onClick={() => go("employees")}>
+            <ArrowLeft size={15} />
+            All employees
+          </button>
+          <div className="employee-context-cover" aria-hidden="true" />
+          <div className="employee-context-identity">
+            <span className="employee-monogram">{employee.employee_number}</span>
             <p className="eyebrow">EMPLOYEE PROFILE</p>
-            <h1 dir="auto">
-              {employee.personal?.arabic_full_name || "Employee"}
-            </h1>
-            <p>
-              {employee.personal?.english_full_name} · #
-              {employee.employee_number}
-            </p>
+            <h1 dir="auto">{employee.personal?.arabic_full_name || "Employee"}</h1>
+            <p>{employee.personal?.english_full_name}</p>
             <div className="profile-meta">
               <Badge status={employee.employee_status} />
-              <span>{employee.work?.position?.name}</span>
-              <span>{employee.work?.department?.name}</span>
             </div>
           </div>
-          <div className="profile-actions">
+          <dl className="employee-context-summary">
+            <div><dt>Position</dt><dd>{employee.work?.position?.name || "—"}</dd></div>
+            <div><dt>Department</dt><dd>{employee.work?.department?.name || "—"}</dd></div>
+            <div><dt>Employee ID</dt><dd>#{employee.employee_number}</dd></div>
+            <div><dt>Joined</dt><dd>{date(employee.work?.joining_date)}</dd></div>
+          </dl>
+          <nav className="employee-context-nav" aria-label="Employee navigation">
+            <p>Employee navigation</p>
+            {profileGroups.map((group) => (
+              <button
+                key={group.label}
+                className={activeGroup.label === group.label ? "selected" : ""}
+                onClick={() => setTab(group.items[0])}
+              >
+                <span>{group.label}</span>
+                <small>{group.items.length > 1 ? `${group.items.length} sections` : "View section"}</small>
+              </button>
+            ))}
+          </nav>
+        </aside>
+        <div className="employee-profile-main">
+          <header className="employee-profile-header">
+            <div>
+              <p className="eyebrow">{activeGroup.label}</p>
+              <h2>{tabLabel(tab)}</h2>
+              <p>Employee information is organized by the current profile section.</p>
+            </div>
+            <div className="profile-actions">
             {capabilities.includes("employees.edit") && (
               <button
                 className="primary"
@@ -1468,20 +1497,17 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
                   Mark as Resigned / Inactive
                 </button>
               )}
-          </div>
-        </div>
-      </div>
-      <nav className="profile-tabs">
-        {tabs.map((x) => (
-          <button
-            key={x}
-            className={tab === x ? "selected" : ""}
-            onClick={() => setTab(x)}
-          >
-            {x === "overview" ? "Overview" : labels[x]}
-          </button>
-        ))}
-      </nav>
+            </div>
+          </header>
+          {activeGroup.items.length > 1 && (
+            <nav className="profile-tabs employee-secondary-tabs" aria-label={`${activeGroup.label} sections`}>
+              {activeGroup.items.map((item) => (
+                <button key={item} className={tab === item ? "selected" : ""} onClick={() => setTab(item)}>
+                  {tabLabel(item)}
+                </button>
+              ))}
+            </nav>
+          )}
       {tab === "overview" && (
         <div>
           <div className="overview-grid">
@@ -1894,6 +1920,8 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
           }}
         />
       )}
+        </div>
+      </div>
     </section>
   );
 }

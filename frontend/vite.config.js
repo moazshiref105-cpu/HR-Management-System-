@@ -3,5 +3,5 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  server: { proxy: { '/api': process.env.HMS_PHP_API_ORIGIN || 'http://127.0.0.1:8080' } },
+  server: { proxy: { '/api': process.env.HMS_PHP_API_ORIGIN || 'http://127.0.0.1:8081' } },
 })

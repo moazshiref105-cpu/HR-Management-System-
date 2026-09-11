@@ -300,6 +300,7 @@ function Sidebar({ session, page, setPage, logout, isOpen, onOpen, close }) {
             </div>
           </div>
           <nav>
+            <p className="nav-label">Workspace</p>
             <button className={`nav-item ${page === "dashboard" ? "selected" : ""}`} onClick={() => { setPage("dashboard"); close(); }}>
               <LayoutDashboard size={17} />
               <span>Dashboard</span>
@@ -314,6 +315,7 @@ function Sidebar({ session, page, setPage, logout, isOpen, onOpen, close }) {
               <UsersRound size={17} />
               <span>Employees</span>
             </button>
+            <p className="nav-label nav-label-settings">Configuration</p>
             <button
               className={`nav-item ${page !== "dashboard" && !page.startsWith("employees") ? "selected" : ""}`}
               onClick={() => {
@@ -1205,6 +1207,11 @@ function AppShell({ session, onLogout }) {
     return () => removeEventListener("hashchange", onHash);
   }, []);
   const go = (id) => (location.hash = id);
+  const moduleContext = page === "dashboard"
+    ? ["Workforce intelligence", "Dashboard"]
+    : page.startsWith("employees")
+      ? ["People operations", "Employees"]
+      : ["Organization settings", "SetUp"];
   const employeeParts = page.split("/");
   let content =
     page === "dashboard" ? (
@@ -1244,8 +1251,17 @@ function AppShell({ session, onLogout }) {
       />
       <main className="main-content">
         <header className="topbar">
-          <span>{page === "dashboard" ? "Dashboard" : page.startsWith("employees") ? "Employees" : "SetUp"}</span>
-          <div className="top-avatar">{initials(session.user.email)}</div>
+          <div className="topbar-context">
+            <small>{moduleContext[0]}</small>
+            <span>{moduleContext[1]}</span>
+          </div>
+          <div className="topbar-user" aria-label="Current user">
+            <div>
+              <strong>{session.user.user_metadata?.full_name || session.user.email}</strong>
+              <small>Signed in</small>
+            </div>
+            <div className="top-avatar">{initials(session.user.email)}</div>
+          </div>
         </header>
         {content}
         <footer className="mobile-signature">By Moaz Shiref</footer>
