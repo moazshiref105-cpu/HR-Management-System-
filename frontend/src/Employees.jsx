@@ -1,77 +1,2158 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, CalendarClock, ChevronRight, CircleAlert, FilePlus2, HeartPulse, Pencil, Plus, RefreshCw, ShieldAlert, UserRoundPlus } from "lucide-react";
-import { employeesApi, setupApi, employeeLookupApi, invalidateDashboardData, subscribeEmployeeLookupInvalidation } from "./api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowLeft,
+  CalendarClock,
+  ChevronRight,
+  CircleAlert,
+  FilePlus2,
+  HeartPulse,
+  Pencil,
+  Plus,
+  RefreshCw,
+  ShieldAlert,
+  UserRoundPlus,
+} from "lucide-react";
+import {
+  employeesApi,
+  setupApi,
+  employeeLookupApi,
+  invalidateDashboardData,
+  subscribeEmployeeLookupInvalidation,
+} from "./api";
+import { supabase } from "./auth";
 
-const resources = ["religions", "marital-statuses", "diplomas", "governorates", "departments", "shift-types", "teams", "positions", "projects", "banks", "leaving-reasons", "license-types"];
-const emptyForm = { gender: "male", arabic_full_name: "", english_full_name: "", identity_card_number: "", identity_card_expiration_date: "", date_of_birth: "", religion_id: "", marital_status_id: "", diploma_id: "", major: "", graduated_from: "", phone: "", governorate_id: "", address: "", employee_classification: "standard", department_id: "", shift_type_id: "", team_id: "", position_id: "", project_id: "", joining_date: "", contract_signing_date: "", social_insurance_active: false, social_insurance_comment: "", form_1_incoming_number: "", form_1_incoming_date: "", bank_id: "", bank_account_number: "" };
-const labels = { personal: "Personal", family: "Family", work: "Work", insurance: "Insurance", financial: "Financial", licenses: "Licenses", contracts: "Contract History", notifications: "Notifications" };
-const date = (value) => value ? new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" }).format(new Date(`${value}T00:00:00`)) : "—";
-const option = (items, id) => items?.find((item) => String(item.id) === String(id));
-const clean = (form, includeFinancial = true) => Object.fromEntries(Object.entries(form).filter(([key]) => includeFinancial || !["bank_id", "bank_account_number"].includes(key)).map(([key, value]) => [key, value === "" ? null : ["religion_id", "marital_status_id", "diploma_id", "governorate_id", "department_id", "shift_type_id", "team_id", "position_id", "project_id", "bank_id"].includes(key) && value != null ? Number(value) : value]));
-const employeeFormValues = (employee) => ({ ...emptyForm, ...employee.personal, ...employee.work, ...employee.insurance, ...employee.financial, bank_id: employee.financial?.bank?.id || "", employee_classification: employee.employee_classification });
+const resources = [
+  "religions",
+  "marital-statuses",
+  "diplomas",
+  "governorates",
+  "departments",
+  "shift-types",
+  "teams",
+  "positions",
+  "projects",
+  "banks",
+  "leaving-reasons",
+  "license-types",
+];
+const emptyForm = {
+  gender: "male",
+  arabic_full_name: "",
+  english_full_name: "",
+  identity_card_number: "",
+  identity_card_expiration_date: "",
+  date_of_birth: "",
+  religion_id: "",
+  marital_status_id: "",
+  diploma_id: "",
+  major: "",
+  graduated_from: "",
+  phone: "",
+  governorate_id: "",
+  address: "",
+  employee_classification: "standard",
+  department_id: "",
+  shift_type_id: "",
+  team_id: "",
+  position_id: "",
+  project_id: "",
+  joining_date: "",
+  contract_signing_date: "",
+  social_insurance_active: false,
+  social_insurance_comment: "",
+  form_1_incoming_number: "",
+  form_1_incoming_date: "",
+  bank_id: "",
+  bank_account_number: "",
+};
+const labels = {
+  personal: "Personal",
+  family: "Family",
+  work: "Work",
+  insurance: "Insurance",
+  financial: "Financial",
+  licenses: "Licenses",
+  contracts: "Contract History",
+  notifications: "Notifications",
+};
+const date = (value) =>
+  value
+    ? new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" }).format(
+        new Date(`${value}T00:00:00`),
+      )
+    : "—";
+const option = (items, id) =>
+  items?.find((item) => String(item.id) === String(id));
+const clean = (form, includeFinancial = true) =>
+  Object.fromEntries(
+    Object.entries(form)
+      .filter(
+        ([key]) =>
+          includeFinancial || !["bank_id", "bank_account_number"].includes(key),
+      )
+      .map(([key, value]) => [
+        key,
+        value === ""
+          ? null
+          : [
+                "religion_id",
+                "marital_status_id",
+                "diploma_id",
+                "governorate_id",
+                "department_id",
+                "shift_type_id",
+                "team_id",
+                "position_id",
+                "project_id",
+                "bank_id",
+              ].includes(key) && value != null
+            ? Number(value)
+            : value,
+      ]),
+  );
+const employeeFormValues = (employee) => ({
+  ...emptyForm,
+  ...employee.personal,
+  ...employee.work,
+  ...employee.insurance,
+  ...employee.financial,
+  bank_id: employee.financial?.bank?.id || "",
+  employee_classification: employee.employee_classification,
+});
+const numericFormFields = new Set([
+  "religion_id",
+  "marital_status_id",
+  "diploma_id",
+  "governorate_id",
+  "department_id",
+  "shift_type_id",
+  "team_id",
+  "position_id",
+  "project_id",
+  "bank_id",
+]);
+const normalizeFormValue = (key, value) => {
+  if (value == null || value === "") return null;
+  if (numericFormFields.has(key)) return Number(value);
+  return value;
+};
+const formSnapshot = (form) =>
+  Object.keys(form)
+    .sort()
+    .map((key) => [key, normalizeFormValue(key, form[key])]);
+const sameForm = (left, right) =>
+  JSON.stringify(formSnapshot(left)) === JSON.stringify(formSnapshot(right));
 
-function Badge({ status }) { return <span className={`employee-badge ${status}`}>{status === "active" ? "Active" : status === "resigned" ? "Resigned" : "Inactive"}</span>; }
-function Notice({ children, kind = "info" }) { return <div className={`employee-notice ${kind}`}><CircleAlert size={16} />{children}</div>; }
-function Select({ label, name, form, setForm, options, required, position, disabled }) { return <label>{label}{required && <b className="required">*</b>}<select required={required} disabled={disabled} value={form[name] ?? ""} onChange={(e) => setForm({ ...form, [name]: e.target.value })}><option value="">Select {label}</option>{(options || []).filter((x) => x.is_active !== false).map((x) => <option key={x.id} value={x.id}>{x.name}{position ? ` · ${x.position_code}` : ""}</option>)}</select></label>; }
-function Field({ label, name, form, setForm, type = "text", required, disabled, hint }) { return <label>{label}{required && <b className="required">*</b>}<input type={type} required={required} disabled={disabled} value={form[name] ?? ""} onChange={(e) => setForm({ ...form, [name]: e.target.value })} />{hint && <small>{hint}</small>}</label>; }
-function Section({ title, subtitle, children }) { return <section className="employee-form-section"><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div>{children}</section>; }
+function useEmployeeInvalidation(employeeId, token, onInvalidated) {
+  const handler = useRef(onInvalidated);
+  const refreshing = useRef(false);
+  useEffect(() => {
+    handler.current = onInvalidated;
+  });
+  useEffect(() => {
+    if (!supabase || !employeeId || !token) return undefined;
+    let active = true;
+    let subscribed = false;
+    const invalidate = () => {
+      if (!active || refreshing.current) return;
+      refreshing.current = true;
+      Promise.resolve(handler.current?.()).finally(() => {
+        refreshing.current = false;
+      });
+    };
+    const channel = supabase
+      .channel(`employee:${employeeId}`, { config: { private: true } })
+      .on("broadcast", { event: "employee_invalidated" }, invalidate)
+      .subscribe((status) => {
+        if (!active || status !== "SUBSCRIBED") return;
+        if (subscribed) invalidate();
+        subscribed = true;
+      });
+    return () => {
+      active = false;
+      supabase.removeChannel(channel);
+    };
+  }, [employeeId, token]);
+}
 
-function useLookups(token, enabled = true) { const [lookups, setLookups] = useState(null); const [version, setVersion] = useState(0); useEffect(() => subscribeEmployeeLookupInvalidation(() => setVersion((current) => current + 1)), []); useEffect(() => { if (!enabled) return undefined; let active = true; employeeLookupApi.get(token).then((data) => { if (active) setLookups(data); }).catch(() => { if (active) setLookups({}); }); return () => { active = false; }; }, [token, enabled, version]); return lookups; }
+function Badge({ status }) {
+  return (
+    <span className={`employee-badge ${status}`}>
+      {status === "active"
+        ? "Active"
+        : status === "resigned"
+          ? "Resigned"
+          : "Inactive"}
+    </span>
+  );
+}
+function Notice({ children, kind = "info" }) {
+  return (
+    <div className={`employee-notice ${kind}`}>
+      <CircleAlert size={16} />
+      {children}
+    </div>
+  );
+}
+function Select({
+  label,
+  name,
+  form,
+  setForm,
+  options,
+  required,
+  position,
+  disabled,
+}) {
+  return (
+    <label>
+      {label}
+      {required && <b className="required">*</b>}
+      <select
+        required={required}
+        disabled={disabled}
+        value={form[name] ?? ""}
+        onChange={(e) => setForm({ ...form, [name]: e.target.value })}
+      >
+        <option value="">Select {label}</option>
+        {(options || [])
+          .filter((x) => x.is_active !== false)
+          .map((x) => (
+            <option key={x.id} value={x.id}>
+              {x.name}
+              {position ? ` · ${x.position_code}` : ""}
+            </option>
+          ))}
+      </select>
+    </label>
+  );
+}
+function Field({
+  label,
+  name,
+  form,
+  setForm,
+  type = "text",
+  required,
+  disabled,
+  hint,
+}) {
+  return (
+    <label>
+      {label}
+      {required && <b className="required">*</b>}
+      <input
+        type={type}
+        required={required}
+        disabled={disabled}
+        value={form[name] ?? ""}
+        onChange={(e) => setForm({ ...form, [name]: e.target.value })}
+      />
+      {hint && <small>{hint}</small>}
+    </label>
+  );
+}
+function Section({ title, subtitle, children }) {
+  return (
+    <section className="employee-form-section">
+      <div>
+        <h2>{title}</h2>
+        {subtitle && <p>{subtitle}</p>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function useLookups(token, enabled = true) {
+  const [lookups, setLookups] = useState(null);
+  const [version, setVersion] = useState(0);
+  useEffect(
+    () =>
+      subscribeEmployeeLookupInvalidation(() =>
+        setVersion((current) => current + 1),
+      ),
+    [],
+  );
+  useEffect(() => {
+    if (!enabled) return undefined;
+    let active = true;
+    employeeLookupApi
+      .get(token)
+      .then((data) => {
+        if (active) setLookups(data);
+      })
+      .catch(() => {
+        if (active) setLookups({});
+      });
+    return () => {
+      active = false;
+    };
+  }, [token, enabled, version]);
+  return lookups;
+}
 
 export function EmployeesList({ token, go, toast, capabilities = [] }) {
-  const [records, setRecords] = useState(null); const lookup = useLookups(token, !!records); const [filters, setFilters] = useState({ search: "", status: "", department: "", team: "", position: "", project: "", governorate: "", page: 1, pageSize: 25, sort: "employee_number", direction: "asc" }); const [pagination, setPagination] = useState(null); const [error, setError] = useState(""); const [loading, setLoading] = useState(true); const [showMoreFilters, setShowMoreFilters] = useState(false); const [debouncedSearch, setDebouncedSearch] = useState(""); const requestId = useRef(0); const requestController = useRef(null);
-  useEffect(() => { const timer = setTimeout(() => setDebouncedSearch(filters.search), 320); return () => clearTimeout(timer); }, [filters.search]);
-  useEffect(() => { const controller = new AbortController(); const id = ++requestId.current; requestController.current?.abort(); requestController.current = controller; setLoading(true); setError(""); employeesApi.listEmployees({ ...filters, search: debouncedSearch }, token, controller.signal).then((result) => { if (id !== requestId.current) return; setRecords(result.data || []); setPagination(result.pagination); }).catch((e) => { if (e.name === "AbortError" || id !== requestId.current) return; if (!records) setRecords([]); setError("Unable to load employees. Please try again."); }).finally(() => { if (id === requestId.current) setLoading(false); }); return () => controller.abort(); }, [token, debouncedSearch, filters.status, filters.department, filters.team, filters.position, filters.project, filters.governorate, filters.page, filters.pageSize, filters.sort, filters.direction]);
-  const update = (key, value) => setFilters((current) => ({ ...current, [key]: value, page: 1 }));
+  const [records, setRecords] = useState(null);
+  const lookup = useLookups(token, !!records);
+  const [filters, setFilters] = useState({
+    search: "",
+    status: "",
+    department: "",
+    team: "",
+    position: "",
+    project: "",
+    governorate: "",
+    page: 1,
+    pageSize: 25,
+    sort: "employee_number",
+    direction: "asc",
+  });
+  const [pagination, setPagination] = useState(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [showMoreFilters, setShowMoreFilters] = useState(false);
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const requestId = useRef(0);
+  const requestController = useRef(null);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(filters.search), 320);
+    return () => clearTimeout(timer);
+  }, [filters.search]);
+  useEffect(() => {
+    const controller = new AbortController();
+    const id = ++requestId.current;
+    requestController.current?.abort();
+    requestController.current = controller;
+    setLoading(true);
+    setError("");
+    employeesApi
+      .listEmployees(
+        { ...filters, search: debouncedSearch },
+        token,
+        controller.signal,
+      )
+      .then((result) => {
+        if (id !== requestId.current) return;
+        setRecords(result.data || []);
+        setPagination(result.pagination);
+      })
+      .catch((e) => {
+        if (e.name === "AbortError" || id !== requestId.current) return;
+        if (!records) setRecords([]);
+        setError("Unable to load employees. Please try again.");
+      })
+      .finally(() => {
+        if (id === requestId.current) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [
+    token,
+    debouncedSearch,
+    filters.status,
+    filters.department,
+    filters.team,
+    filters.position,
+    filters.project,
+    filters.governorate,
+    filters.page,
+    filters.pageSize,
+    filters.sort,
+    filters.direction,
+  ]);
+  const update = (key, value) =>
+    setFilters((current) => ({ ...current, [key]: value, page: 1 }));
   const setPage = (page) => setFilters((current) => ({ ...current, page }));
-  const lookupKey = { department: "departments", team: "teams", position: "positions", project: "projects", governorate: "governorates" };
-  const select = (key, title) => <select aria-label={title} value={filters[key] || ""} onChange={(e) => update(key, e.target.value)}><option value="">All {title}</option>{lookup?.[lookupKey[key]]?.filter((x) => x.is_active).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select>;
-  const activeFilters = Object.entries(filters).filter(([key, value]) => !["search", "page", "pageSize", "sort", "direction"].includes(key) && value);
-  const total = pagination?.total ?? 0; const start = total === 0 ? 0 : (pagination.page - 1) * pagination.page_size + 1; const end = Math.min(start + (records?.length || 0) - 1, total); const pageNumbers = pagination ? [...new Set([1, pagination.page - 1, pagination.page, pagination.page + 1, pagination.total_pages].filter((page) => page >= 1 && page <= pagination.total_pages))] : [];
-  const resetFilters = () => setFilters({ search: "", status: "", department: "", team: "", position: "", project: "", governorate: "", page: 1, pageSize: filters.pageSize, sort: "employee_number", direction: "asc" });
-  return <section className="section-view employees-view"><div className="section-head"><div><nav className="breadcrumb"><span>People</span><ChevronRight size={13}/><strong>Employees</strong></nav><h1>Employees <small className="page-count">{pagination?.total ?? "—"}</small></h1><p>Manage employee records and employment information.</p></div>{capabilities.includes("employees.create") && <button className="primary" onClick={() => go("employees/new")}><Plus size={17}/> Add Employee</button>}</div>
-    <div className="employee-summary"><article><span>Matching employees</span><strong>{pagination?.total ?? "—"}</strong><small>Across the current server filters</small></article><article><span>Visible on this page</span><strong>{records?.length ?? "—"}</strong><small>Current page only</small></article><article><span>Employee number</span><strong>Automatic</strong><small>Generated by HMS</small></article></div>
-    <div className="employee-filters"><label className="search">⌕ <input value={filters.search} onChange={(e) => update("search", e.target.value)} placeholder="Search employees by ID or name..."/></label>{select("department", "Departments")}<select aria-label="Employee status" value={filters.status} onChange={(e) => update("status", e.target.value)}><option value="">All statuses</option><option value="active">Active</option><option value="resigned">Resigned</option><option value="inactive">Inactive</option></select><select aria-label="Sort employees" value={filters.sort} onChange={(e) => update("sort", e.target.value)}><option value="employee_number">Employee number</option><option value="joining_date">Joining date</option><option value="full_name_ar">Arabic name</option><option value="full_name_en">English name</option><option value="employee_status">Status</option></select><select aria-label="Sort direction" value={filters.direction} onChange={(e) => update("direction", e.target.value)}><option value="asc">Ascending</option><option value="desc">Descending</option></select><button className="secondary" onClick={() => setShowMoreFilters((value) => !value)}>{showMoreFilters ? "Hide" : "More"} Filters</button>{showMoreFilters && <div className="employee-more-filters">{select("team", "Teams")}{select("position", "Positions")}{select("project", "Projects")}{select("governorate", "Governorates")}</div>}</div>
-    {activeFilters.length > 0 && <div className="filter-chips">{activeFilters.map(([key, value]) => <button key={key} onClick={() => update(key, "")}>{key.replace("_", " ")}: {value} ×</button>)}<button className="clear-chip" onClick={resetFilters}>Clear all</button></div>}
-    {error && <Notice kind="danger">{error}</Notice>}{!records ? <div className="loading-list">{[1,2,3,4].map((x) => <div className="skeleton" key={x}/>)}</div> : records.length === 0 ? <div className="empty"><h3>No employees found</h3><p>Try changing or clearing your filters.</p><button className="secondary" onClick={resetFilters}>Clear filters</button></div> : <><div className={`employee-table-wrap${loading ? " is-refreshing" : ""}`}><div className="table-context"><span>Showing {start}–{end} of {total}</span>{loading && <span className="dashboard-updating">Updating results…</span>}</div><table className="employee-table"><thead><tr>{["Employee ID", "Name", "Department", "Position", "Status", "Joining Date", ""].map((x) => <th key={x}>{x}</th>)}</tr></thead><tbody>{records.map((x) => <tr key={x.id} tabIndex="0" onClick={() => go(`employees/${x.id}`)} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && go(`employees/${x.id}`)}><td><strong>#{x.employee_number}</strong></td><td><strong dir="rtl">{x.arabic_full_name}</strong><small>{x.english_full_name}</small></td><td>{x.department?.name || "—"}</td><td>{x.position?.name || "—"}<small className="code">{x.position?.position_code}</small></td><td><Badge status={x.employee_status}/></td><td>{date(x.joining_date)}</td><td><button className="text-button" onClick={(e) => { e.stopPropagation(); go(`employees/${x.id}`); }}>View</button></td></tr>)}</tbody></table></div><footer className="employee-pagination" aria-label="Employee pagination"><div><label>Rows per page <select aria-label="Rows per page" value={filters.pageSize} onChange={(e) => update("pageSize", Number(e.target.value))}>{[25,50,100].map((size) => <option key={size} value={size}>{size}</option>)}</select></label></div><div className="page-controls"><button className="secondary" onClick={() => setPage(pagination.page - 1)} disabled={loading || !pagination.has_previous}>Previous</button><span className="mobile-page">Page {pagination.page} of {pagination.total_pages}</span><span className="desktop-pages">{pageNumbers.map((page, index) => <span key={page}>{index > 0 && page > pageNumbers[index - 1] + 1 && <i>…</i>}<button className={page === pagination.page ? "selected" : ""} aria-label={`Page ${page}`} aria-current={page === pagination.page ? "page" : undefined} onClick={() => setPage(page)} disabled={loading}>{page}</button></span>)}</span><button className="secondary" onClick={() => setPage(pagination.page + 1)} disabled={loading || !pagination.has_next}>Next</button><button className="secondary last-page" onClick={() => setPage(pagination.total_pages)} disabled={loading || !pagination.has_next}>Last</button></div></footer></>}</section>;
+  const lookupKey = {
+    department: "departments",
+    team: "teams",
+    position: "positions",
+    project: "projects",
+    governorate: "governorates",
+  };
+  const select = (key, title) => (
+    <select
+      aria-label={title}
+      value={filters[key] || ""}
+      onChange={(e) => update(key, e.target.value)}
+    >
+      <option value="">All {title}</option>
+      {lookup?.[lookupKey[key]]
+        ?.filter((x) => x.is_active)
+        .map((x) => (
+          <option key={x.id} value={x.id}>
+            {x.name}
+          </option>
+        ))}
+    </select>
+  );
+  const activeFilters = Object.entries(filters).filter(
+    ([key, value]) =>
+      !["search", "page", "pageSize", "sort", "direction"].includes(key) &&
+      value,
+  );
+  const total = pagination?.total ?? 0;
+  const start =
+    total === 0 ? 0 : (pagination.page - 1) * pagination.page_size + 1;
+  const end = Math.min(start + (records?.length || 0) - 1, total);
+  const pageNumbers = pagination
+    ? [
+        ...new Set(
+          [
+            1,
+            pagination.page - 1,
+            pagination.page,
+            pagination.page + 1,
+            pagination.total_pages,
+          ].filter((page) => page >= 1 && page <= pagination.total_pages),
+        ),
+      ]
+    : [];
+  const resetFilters = () =>
+    setFilters({
+      search: "",
+      status: "",
+      department: "",
+      team: "",
+      position: "",
+      project: "",
+      governorate: "",
+      page: 1,
+      pageSize: filters.pageSize,
+      sort: "employee_number",
+      direction: "asc",
+    });
+  return (
+    <section className="section-view employees-view">
+      <div className="section-head">
+        <div>
+          <nav className="breadcrumb">
+            <span>People</span>
+            <ChevronRight size={13} />
+            <strong>Employees</strong>
+          </nav>
+          <h1>
+            Employees{" "}
+            <small className="page-count">{pagination?.total ?? "—"}</small>
+          </h1>
+          <p>Manage employee records and employment information.</p>
+        </div>
+        {capabilities.includes("employees.create") && (
+          <button className="primary" onClick={() => go("employees/new")}>
+            <Plus size={17} /> Add Employee
+          </button>
+        )}
+      </div>
+      <div className="employee-summary">
+        <article>
+          <span>Matching employees</span>
+          <strong>{pagination?.total ?? "—"}</strong>
+          <small>Across the current server filters</small>
+        </article>
+        <article>
+          <span>Visible on this page</span>
+          <strong>{records?.length ?? "—"}</strong>
+          <small>Current page only</small>
+        </article>
+        <article>
+          <span>Employee number</span>
+          <strong>Automatic</strong>
+          <small>Generated by HMS</small>
+        </article>
+      </div>
+      <div className="employee-filters">
+        <label className="search">
+          ⌕{" "}
+          <input
+            value={filters.search}
+            onChange={(e) => update("search", e.target.value)}
+            placeholder="Search employees by ID or name..."
+          />
+        </label>
+        {select("department", "Departments")}
+        <select
+          aria-label="Employee status"
+          value={filters.status}
+          onChange={(e) => update("status", e.target.value)}
+        >
+          <option value="">All statuses</option>
+          <option value="active">Active</option>
+          <option value="resigned">Resigned</option>
+          <option value="inactive">Inactive</option>
+        </select>
+        <select
+          aria-label="Sort employees"
+          value={filters.sort}
+          onChange={(e) => update("sort", e.target.value)}
+        >
+          <option value="employee_number">Employee number</option>
+          <option value="joining_date">Joining date</option>
+          <option value="full_name_ar">Arabic name</option>
+          <option value="full_name_en">English name</option>
+          <option value="employee_status">Status</option>
+        </select>
+        <select
+          aria-label="Sort direction"
+          value={filters.direction}
+          onChange={(e) => update("direction", e.target.value)}
+        >
+          <option value="asc">Ascending</option>
+          <option value="desc">Descending</option>
+        </select>
+        <button
+          className="secondary"
+          onClick={() => setShowMoreFilters((value) => !value)}
+        >
+          {showMoreFilters ? "Hide" : "More"} Filters
+        </button>
+        {showMoreFilters && (
+          <div className="employee-more-filters">
+            {select("team", "Teams")}
+            {select("position", "Positions")}
+            {select("project", "Projects")}
+            {select("governorate", "Governorates")}
+          </div>
+        )}
+      </div>
+      {activeFilters.length > 0 && (
+        <div className="filter-chips">
+          {activeFilters.map(([key, value]) => (
+            <button key={key} onClick={() => update(key, "")}>
+              {key.replace("_", " ")}: {value} ×
+            </button>
+          ))}
+          <button className="clear-chip" onClick={resetFilters}>
+            Clear all
+          </button>
+        </div>
+      )}
+      {error && <Notice kind="danger">{error}</Notice>}
+      {!records ? (
+        <div className="loading-list">
+          {[1, 2, 3, 4].map((x) => (
+            <div className="skeleton" key={x} />
+          ))}
+        </div>
+      ) : records.length === 0 ? (
+        <div className="empty">
+          <h3>No employees found</h3>
+          <p>Try changing or clearing your filters.</p>
+          <button className="secondary" onClick={resetFilters}>
+            Clear filters
+          </button>
+        </div>
+      ) : (
+        <>
+          <div
+            className={`employee-table-wrap${loading ? " is-refreshing" : ""}`}
+          >
+            <div className="table-context">
+              <span>
+                Showing {start}–{end} of {total}
+              </span>
+              {loading && (
+                <span className="dashboard-updating">Updating results…</span>
+              )}
+            </div>
+            <table className="employee-table">
+              <thead>
+                <tr>
+                  {[
+                    "Employee ID",
+                    "Name",
+                    "Department",
+                    "Position",
+                    "Status",
+                    "Joining Date",
+                    "",
+                  ].map((x) => (
+                    <th key={x}>{x}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {records.map((x) => (
+                  <tr
+                    key={x.id}
+                    tabIndex="0"
+                    onClick={() => go(`employees/${x.id}`)}
+                    onKeyDown={(e) =>
+                      (e.key === "Enter" || e.key === " ") &&
+                      go(`employees/${x.id}`)
+                    }
+                  >
+                    <td>
+                      <strong>#{x.employee_number}</strong>
+                    </td>
+                    <td>
+                      <strong dir="rtl">{x.arabic_full_name}</strong>
+                      <small>{x.english_full_name}</small>
+                    </td>
+                    <td>{x.department?.name || "—"}</td>
+                    <td>
+                      {x.position?.name || "—"}
+                      <small className="code">
+                        {x.position?.position_code}
+                      </small>
+                    </td>
+                    <td>
+                      <Badge status={x.employee_status} />
+                    </td>
+                    <td>{date(x.joining_date)}</td>
+                    <td>
+                      <button
+                        className="text-button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          go(`employees/${x.id}`);
+                        }}
+                      >
+                        View
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <footer
+            className="employee-pagination"
+            aria-label="Employee pagination"
+          >
+            <div>
+              <label>
+                Rows per page{" "}
+                <select
+                  aria-label="Rows per page"
+                  value={filters.pageSize}
+                  onChange={(e) => update("pageSize", Number(e.target.value))}
+                >
+                  {[25, 50, 100].map((size) => (
+                    <option key={size} value={size}>
+                      {size}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="page-controls">
+              <button
+                className="secondary"
+                onClick={() => setPage(pagination.page - 1)}
+                disabled={loading || !pagination.has_previous}
+              >
+                Previous
+              </button>
+              <span className="mobile-page">
+                Page {pagination.page} of {pagination.total_pages}
+              </span>
+              <span className="desktop-pages">
+                {pageNumbers.map((page, index) => (
+                  <span key={page}>
+                    {index > 0 && page > pageNumbers[index - 1] + 1 && <i>…</i>}
+                    <button
+                      className={page === pagination.page ? "selected" : ""}
+                      aria-label={`Page ${page}`}
+                      aria-current={
+                        page === pagination.page ? "page" : undefined
+                      }
+                      onClick={() => setPage(page)}
+                      disabled={loading}
+                    >
+                      {page}
+                    </button>
+                  </span>
+                ))}
+              </span>
+              <button
+                className="secondary"
+                onClick={() => setPage(pagination.page + 1)}
+                disabled={loading || !pagination.has_next}
+              >
+                Next
+              </button>
+              <button
+                className="secondary last-page"
+                onClick={() => setPage(pagination.total_pages)}
+                disabled={loading || !pagination.has_next}
+              >
+                Last
+              </button>
+            </div>
+          </footer>
+        </>
+      )}
+    </section>
+  );
 }
 
-export function EmployeeForm({ token, go, toast, employee: source, mode = "create", capabilities = [] }) {
- const lookup = useLookups(token); const [step, setStep] = useState(0); const [busy, setBusy] = useState(false); const [form, setForm] = useState(() => source ? employeeFormValues(source) : emptyForm); const [version, setVersion] = useState(() => source?.updated_at || null); const [conflict, setConflict] = useState(false); const steps = ["Personal", "Family", "Work", "Insurance", "Financial", "Review"];
- const selectedPosition = option(lookup?.positions, form.position_id); const married = /married/i.test(option(lookup?.["marital-statuses"], form.marital_status_id)?.name || ""); const financialEditable = capabilities.includes("employees.financial.edit");
- const refreshLatest = async () => { if (!source) return; setBusy(true); try { const latest = await employeesApi.getEmployee(source.id, token); setForm(employeeFormValues(latest)); setVersion(latest.updated_at); setConflict(false); } catch (e) { toast(e.message, "error"); } finally { setBusy(false); } };
- const save = async () => { if (!/^\d{14}$/.test(form.identity_card_number)) return toast("Identity card number must be exactly 14 digits.", "error"); if (!/^\d{11}$/.test(form.phone)) return toast("Phone must be exactly 11 digits.", "error"); setBusy(true); try { const body = clean(form, financialEditable); const result = source ? await employeesApi.updateEmployee(source.id, { ...body, expected_updated_at: version }, token) : await employeesApi.createEmployee(body, token); invalidateDashboardData(); if (source) { setVersion(result.updated_at); toast("Employee updated.", "success"); } else { toast("Employee created.", "success"); go(`employees/${result.id}`); } } catch (e) { if (source && e.status === 409 && e.code === "employee_conflict") setConflict(true); else toast(e.message, "error"); } finally { setBusy(false); } };
- if (!lookup) return <section className="section-view"><div className="loading-list"><div className="skeleton"/></div></section>;
- if (!capabilities.includes(source ? "employees.edit" : "employees.create")) return <section className="section-view"><Notice kind="danger">You are not authorized to {source ? "edit" : "create"} employees.</Notice></section>;
- return <section className="section-view employees-view"><div className="section-head"><div><button className="back-to-setup" onClick={() => go(source ? `employees/${source.id}` : "employees")}><ArrowLeft size={15}/>Back to Employees</button><h1>{source ? "Edit Employee" : "Add Employee"}</h1><p>{source ? "Update the employee record one clear step at a time." : "Create a complete employee profile in a few manageable steps."}</p></div></div>{conflict && <Notice kind="danger">Another user updated this employee after you opened it. Your unsaved changes are still here.<span className="notice-actions"><button className="secondary" disabled={busy} onClick={refreshLatest}>Refresh Latest Data</button><button className="text-button" disabled={busy} onClick={() => setConflict(false)}>Keep Editing</button></span></Notice>}<div className="employee-steps">{steps.map((x, i) => <button key={x} className={i === step ? "current" : i < step ? "done" : ""} onClick={() => setStep(i)}><span>{i + 1}</span>{x}</button>)}</div><div className="employee-form-card">{step === 0 && <Section title="Personal Information" subtitle="Employee number is created automatically when you save."><div className="field-grid"><Field label="Arabic Full Name" name="arabic_full_name" form={form} setForm={setForm} required/><Field label="English Full Name" name="english_full_name" form={form} setForm={setForm} required/><label>Gender<b className="required">*</b><select value={form.gender} onChange={(e) => setForm({...form, gender:e.target.value})}><option value="male">Male</option><option value="female">Female</option></select></label><Field label="Identity Card Number" name="identity_card_number" form={form} setForm={setForm} required hint="14 digits"/><Field label="Identity Card Expiration Date" name="identity_card_expiration_date" form={form} setForm={setForm} type="date" required/><Field label="Date of Birth" name="date_of_birth" form={form} setForm={setForm} type="date" required/><Select label="Religion" name="religion_id" form={form} setForm={setForm} options={lookup.religions} required/><Select label="Marital Status" name="marital_status_id" form={form} setForm={setForm} options={lookup["marital-statuses"]} required/><Select label="Diploma" name="diploma_id" form={form} setForm={setForm} options={lookup.diplomas}/><Field label="Major" name="major" form={form} setForm={setForm}/><Field label="Graduated From" name="graduated_from" form={form} setForm={setForm}/><Field label="Phone" name="phone" form={form} setForm={setForm} required hint="11 digits"/><Select label="Governorate" name="governorate_id" form={form} setForm={setForm} options={lookup.governorates} required/><Field label="Address" name="address" form={form} setForm={setForm}/><label>Employee Classification<select value={form.employee_classification} onChange={(e)=>setForm({...form, employee_classification:e.target.value})}><option value="standard">Standard</option><option value="five_percent">5%</option></select></label></div></Section>}{step === 1 && <Section title="Family" subtitle="Family details can be added after this employee is created.">{married ? <Notice>Add wives and children from the Family section after saving this profile.</Notice> : <Notice>Family details can be added later if they become relevant.</Notice>}</Section>}{step === 2 && <Section title="Work Information" subtitle="HMS calculates contract expiration and probation after you save."><div className="field-grid"><Select label="Department" name="department_id" form={form} setForm={setForm} options={lookup.departments} required/><Select label="Shift Type" name="shift_type_id" form={form} setForm={setForm} options={lookup["shift-types"]} required/><Select label="Team" name="team_id" form={form} setForm={setForm} options={lookup.teams}/><Select label="Position" name="position_id" form={form} setForm={setForm} options={lookup.positions} position required/><label>Position Code<input disabled value={selectedPosition?.position_code || "Select a position"}/></label><Select label="Project" name="project_id" form={form} setForm={setForm} options={lookup.projects}/><Field label="Joining Date" name="joining_date" form={form} setForm={setForm} type="date" required/><Field label="Contract Signing Date" name="contract_signing_date" form={form} setForm={setForm} type="date" required/></div></Section>}{step === 3 && <Section title="Insurance" subtitle="Eligibility and deadlines are calculated by HMS after you save."><div className="field-grid"><label className="check"><input type="checkbox" checked={!!form.social_insurance_active} onChange={(e)=>setForm({...form,social_insurance_active:e.target.checked})}/>Social Insurance Active</label><Field label="Form 1 Incoming Number" name="form_1_incoming_number" form={form} setForm={setForm}/><Field label="Form 1 Incoming Date" name="form_1_incoming_date" form={form} setForm={setForm} type="date"/><label className="field-span">Social Insurance Comment<textarea value={form.social_insurance_comment || ""} onChange={(e)=>setForm({...form,social_insurance_comment:e.target.value})}/></label></div></Section>}{step === 4 && <Section title="Financial" subtitle="Choose the employee’s bank and account number when available."><div className="field-grid"><Select label="Bank" name="bank_id" form={form} setForm={setForm} options={lookup.banks} disabled={!financialEditable}/><Field label="Bank Account Number" name="bank_account_number" form={form} setForm={setForm} disabled={!financialEditable}/></div></Section>}{step === 5 && <Section title="Review Employee" subtitle="HMS checks the record and calculates employee dates when you create it."><div className="review-grid"><Info label="Employee Number" value="Generated automatically"/><Info label="Position" value={selectedPosition ? `${selectedPosition.name} · ${selectedPosition.position_code}` : "Not selected"}/><Info label="Joining Date" value={date(form.joining_date)}/><Info label="Insurance calculations" value="Available after save"/></div></Section>}<div className="form-navigation"><button className="secondary" disabled={step === 0} onClick={() => setStep(step - 1)}>Back</button>{step < steps.length - 1 ? <button className="primary" onClick={() => setStep(step + 1)}>Continue <ChevronRight size={16}/></button> : <button className="primary" disabled={busy} onClick={save}>{busy ? "Saving…" : source ? "Save Changes" : "Create Employee"}</button>}</div></div></section>;
+export function EmployeeForm({
+  token,
+  go,
+  toast,
+  employee: source,
+  mode = "create",
+  capabilities = [],
+}) {
+  const lookup = useLookups(token);
+  const [step, setStep] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState(() =>
+    source ? employeeFormValues(source) : emptyForm,
+  );
+  const [baseline, setBaseline] = useState(() =>
+    source ? employeeFormValues(source) : emptyForm,
+  );
+  const [version, setVersion] = useState(() => source?.updated_at || null);
+  const [occConflict, setOccConflict] = useState(false);
+  const [stale, setStale] = useState(false);
+  const steps = [
+    "Personal",
+    "Family",
+    "Work",
+    "Insurance",
+    "Financial",
+    "Review",
+  ];
+  const selectedPosition = option(lookup?.positions, form.position_id);
+  const married = /married/i.test(
+    option(lookup?.["marital-statuses"], form.marital_status_id)?.name || "",
+  );
+  const financialEditable = capabilities.includes("employees.financial.edit");
+  const refreshLatest = useCallback(async () => {
+    if (!source) return;
+    setBusy(true);
+    try {
+      const latest = await employeesApi.getEmployee(source.id, token);
+      const next = employeeFormValues(latest);
+      setForm(next);
+      setBaseline(next);
+      setVersion(latest.updated_at);
+      setOccConflict(false);
+      setStale(false);
+    } catch (e) {
+      toast(e.message, "error");
+    } finally {
+      setBusy(false);
+    }
+  }, [source, token, toast]);
+  const dirty = !sameForm(form, baseline);
+  const dirtyRef = useRef(dirty);
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
+  useEmployeeInvalidation(
+    source?.id,
+    token,
+    useCallback(async () => {
+      if (dirtyRef.current) {
+        setStale(true);
+        return;
+      }
+      await refreshLatest();
+    }, [refreshLatest]),
+  );
+  const save = async () => {
+    if (!/^\d{14}$/.test(form.identity_card_number))
+      return toast("Identity card number must be exactly 14 digits.", "error");
+    if (!/^\d{11}$/.test(form.phone))
+      return toast("Phone must be exactly 11 digits.", "error");
+    setBusy(true);
+    try {
+      const body = clean(form, financialEditable);
+      const result = source
+        ? await employeesApi.updateEmployee(
+            source.id,
+            { ...body, expected_updated_at: version },
+            token,
+          )
+        : await employeesApi.createEmployee(body, token);
+      invalidateDashboardData();
+      if (source) {
+        setVersion(result.updated_at);
+        setBaseline(form);
+        setStale(false);
+        setOccConflict(false);
+        toast("Employee updated.", "success");
+      } else {
+        toast("Employee created.", "success");
+        go(`employees/${result.id}`);
+      }
+    } catch (e) {
+      if (source && e.status === 409 && e.code === "employee_conflict")
+        setOccConflict(true);
+      else toast(e.message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (!lookup)
+    return (
+      <section className="section-view">
+        <div className="loading-list">
+          <div className="skeleton" />
+        </div>
+      </section>
+    );
+  if (!capabilities.includes(source ? "employees.edit" : "employees.create"))
+    return (
+      <section className="section-view">
+        <Notice kind="danger">
+          You are not authorized to {source ? "edit" : "create"} employees.
+        </Notice>
+      </section>
+    );
+  return (
+    <section className="section-view employees-view">
+      <div className="section-head">
+        <div>
+          <button
+            className="back-to-setup"
+            onClick={() => go(source ? `employees/${source.id}` : "employees")}
+          >
+            <ArrowLeft size={15} />
+            Back to Employees
+          </button>
+          <h1>{source ? "Edit Employee" : "Add Employee"}</h1>
+          <p>
+            {source
+              ? "Update the employee record one clear step at a time."
+              : "Create a complete employee profile in a few manageable steps."}
+          </p>
+        </div>
+      </div>
+      {stale && dirty && (
+        <Notice kind="warning">
+          Employee data changed on the server while you were editing.
+          <span className="notice-actions">
+            <button
+              className="secondary"
+              disabled={busy}
+              onClick={refreshLatest}
+            >
+              Refresh Latest
+            </button>
+          </span>
+        </Notice>
+      )}
+      {occConflict && (
+        <Notice kind="danger">
+          Another user updated this employee after you opened it. Your unsaved
+          changes are still here.
+          <span className="notice-actions">
+            <button
+              className="secondary"
+              disabled={busy}
+              onClick={refreshLatest}
+            >
+              Refresh Latest Data
+            </button>
+            <button
+              className="text-button"
+              disabled={busy}
+              onClick={() => setOccConflict(false)}
+            >
+              Keep Editing
+            </button>
+          </span>
+        </Notice>
+      )}
+      <div className="employee-steps">
+        {steps.map((x, i) => (
+          <button
+            key={x}
+            className={i === step ? "current" : i < step ? "done" : ""}
+            onClick={() => setStep(i)}
+          >
+            <span>{i + 1}</span>
+            {x}
+          </button>
+        ))}
+      </div>
+      <div className="employee-form-card">
+        {step === 0 && (
+          <Section
+            title="Personal Information"
+            subtitle="Employee number is created automatically when you save."
+          >
+            <div className="field-grid">
+              <Field
+                label="Arabic Full Name"
+                name="arabic_full_name"
+                form={form}
+                setForm={setForm}
+                required
+              />
+              <Field
+                label="English Full Name"
+                name="english_full_name"
+                form={form}
+                setForm={setForm}
+                required
+              />
+              <label>
+                Gender<b className="required">*</b>
+                <select
+                  value={form.gender}
+                  onChange={(e) => setForm({ ...form, gender: e.target.value })}
+                >
+                  <option value="male">Male</option>
+                  <option value="female">Female</option>
+                </select>
+              </label>
+              <Field
+                label="Identity Card Number"
+                name="identity_card_number"
+                form={form}
+                setForm={setForm}
+                required
+                hint="14 digits"
+              />
+              <Field
+                label="Identity Card Expiration Date"
+                name="identity_card_expiration_date"
+                form={form}
+                setForm={setForm}
+                type="date"
+                required
+              />
+              <Field
+                label="Date of Birth"
+                name="date_of_birth"
+                form={form}
+                setForm={setForm}
+                type="date"
+                required
+              />
+              <Select
+                label="Religion"
+                name="religion_id"
+                form={form}
+                setForm={setForm}
+                options={lookup.religions}
+                required
+              />
+              <Select
+                label="Marital Status"
+                name="marital_status_id"
+                form={form}
+                setForm={setForm}
+                options={lookup["marital-statuses"]}
+                required
+              />
+              <Select
+                label="Diploma"
+                name="diploma_id"
+                form={form}
+                setForm={setForm}
+                options={lookup.diplomas}
+              />
+              <Field label="Major" name="major" form={form} setForm={setForm} />
+              <Field
+                label="Graduated From"
+                name="graduated_from"
+                form={form}
+                setForm={setForm}
+              />
+              <Field
+                label="Phone"
+                name="phone"
+                form={form}
+                setForm={setForm}
+                required
+                hint="11 digits"
+              />
+              <Select
+                label="Governorate"
+                name="governorate_id"
+                form={form}
+                setForm={setForm}
+                options={lookup.governorates}
+                required
+              />
+              <Field
+                label="Address"
+                name="address"
+                form={form}
+                setForm={setForm}
+              />
+              <label>
+                Employee Classification
+                <select
+                  value={form.employee_classification}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      employee_classification: e.target.value,
+                    })
+                  }
+                >
+                  <option value="standard">Standard</option>
+                  <option value="five_percent">5%</option>
+                </select>
+              </label>
+            </div>
+          </Section>
+        )}
+        {step === 1 && (
+          <Section
+            title="Family"
+            subtitle="Family details can be added after this employee is created."
+          >
+            {married ? (
+              <Notice>
+                Add wives and children from the Family section after saving this
+                profile.
+              </Notice>
+            ) : (
+              <Notice>
+                Family details can be added later if they become relevant.
+              </Notice>
+            )}
+          </Section>
+        )}
+        {step === 2 && (
+          <Section
+            title="Work Information"
+            subtitle="HMS calculates contract expiration and probation after you save."
+          >
+            <div className="field-grid">
+              <Select
+                label="Department"
+                name="department_id"
+                form={form}
+                setForm={setForm}
+                options={lookup.departments}
+                required
+              />
+              <Select
+                label="Shift Type"
+                name="shift_type_id"
+                form={form}
+                setForm={setForm}
+                options={lookup["shift-types"]}
+                required
+              />
+              <Select
+                label="Team"
+                name="team_id"
+                form={form}
+                setForm={setForm}
+                options={lookup.teams}
+              />
+              <Select
+                label="Position"
+                name="position_id"
+                form={form}
+                setForm={setForm}
+                options={lookup.positions}
+                position
+                required
+              />
+              <label>
+                Position Code
+                <input
+                  disabled
+                  value={selectedPosition?.position_code || "Select a position"}
+                />
+              </label>
+              <Select
+                label="Project"
+                name="project_id"
+                form={form}
+                setForm={setForm}
+                options={lookup.projects}
+              />
+              <Field
+                label="Joining Date"
+                name="joining_date"
+                form={form}
+                setForm={setForm}
+                type="date"
+                required
+              />
+              <Field
+                label="Contract Signing Date"
+                name="contract_signing_date"
+                form={form}
+                setForm={setForm}
+                type="date"
+                required
+              />
+            </div>
+          </Section>
+        )}
+        {step === 3 && (
+          <Section
+            title="Insurance"
+            subtitle="Eligibility and deadlines are calculated by HMS after you save."
+          >
+            <div className="field-grid">
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={!!form.social_insurance_active}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      social_insurance_active: e.target.checked,
+                    })
+                  }
+                />
+                Social Insurance Active
+              </label>
+              <Field
+                label="Form 1 Incoming Number"
+                name="form_1_incoming_number"
+                form={form}
+                setForm={setForm}
+              />
+              <Field
+                label="Form 1 Incoming Date"
+                name="form_1_incoming_date"
+                form={form}
+                setForm={setForm}
+                type="date"
+              />
+              <label className="field-span">
+                Social Insurance Comment
+                <textarea
+                  value={form.social_insurance_comment || ""}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      social_insurance_comment: e.target.value,
+                    })
+                  }
+                />
+              </label>
+            </div>
+          </Section>
+        )}
+        {step === 4 && (
+          <Section
+            title="Financial"
+            subtitle="Choose the employee’s bank and account number when available."
+          >
+            <div className="field-grid">
+              <Select
+                label="Bank"
+                name="bank_id"
+                form={form}
+                setForm={setForm}
+                options={lookup.banks}
+                disabled={!financialEditable}
+              />
+              <Field
+                label="Bank Account Number"
+                name="bank_account_number"
+                form={form}
+                setForm={setForm}
+                disabled={!financialEditable}
+              />
+            </div>
+          </Section>
+        )}
+        {step === 5 && (
+          <Section
+            title="Review Employee"
+            subtitle="HMS checks the record and calculates employee dates when you create it."
+          >
+            <div className="review-grid">
+              <Info label="Employee Number" value="Generated automatically" />
+              <Info
+                label="Position"
+                value={
+                  selectedPosition
+                    ? `${selectedPosition.name} · ${selectedPosition.position_code}`
+                    : "Not selected"
+                }
+              />
+              <Info label="Joining Date" value={date(form.joining_date)} />
+              <Info
+                label="Insurance calculations"
+                value="Available after save"
+              />
+            </div>
+          </Section>
+        )}
+        <div className="form-navigation">
+          <button
+            className="secondary"
+            disabled={step === 0}
+            onClick={() => setStep(step - 1)}
+          >
+            Back
+          </button>
+          {step < steps.length - 1 ? (
+            <button className="primary" onClick={() => setStep(step + 1)}>
+              Continue <ChevronRight size={16} />
+            </button>
+          ) : (
+            <button className="primary" disabled={busy} onClick={save}>
+              {busy ? "Saving…" : source ? "Save Changes" : "Create Employee"}
+            </button>
+          )}
+        </div>
+      </div>
+    </section>
+  );
 }
 
-function Info({ label, value }) { return <article className="info-row"><span>{label}</span><strong>{value || "—"}</strong></article>; }
-function FamilyEditor({ type, item, wives, onClose, save, conflict, refreshLatest, keepEditing }) { const [form, setForm] = useState(item || (type === "wife" ? { wife_name:"", identity_card_number:"", is_working:false } : { child_name:"", identity_card_number:"", wife_id:"" })); const title = `${item?.id ? "Edit" : "Add"} ${type === "wife" ? "Wife" : "Child"}`; const refresh = async () => { const latest = await refreshLatest(type, item.id); if (latest) setForm(latest); }; return <Drawer title={title} onClose={onClose}>{conflict && <Notice kind="danger">This record was updated by another user.<span className="notice-actions"><button type="button" className="secondary" onClick={refresh}>Refresh Latest Data</button><button type="button" className="text-button" onClick={keepEditing}>Keep Editing</button></span></Notice>}<form onSubmit={(e)=>{e.preventDefault(); if(!/^\d{14}$/.test(form.identity_card_number)) return; save({...form,wife_id:form.wife_id || null,...(item ? {expected_updated_at:item.updated_at} : {})});}}><Field label={type === "wife" ? "Wife Name" : "Child Name"} name={type === "wife" ? "wife_name" : "child_name"} form={form} setForm={setForm} required/><Field label="Identity Card Number" name="identity_card_number" form={form} setForm={setForm} required hint="14 digits"/>{type === "wife" ? <label className="check"><input type="checkbox" checked={!!form.is_working} onChange={(e)=>setForm({...form,is_working:e.target.checked})}/>Is working</label> : <label>Related Wife (optional)<select value={form.wife_id || ""} onChange={(e)=>setForm({...form,wife_id:e.target.value})}><option value="">Not specified</option>{wives.map((wife)=><option key={wife.id} value={wife.id}>{wife.wife_name}</option>)}</select></label>}<button className="primary wide">Save</button></form></Drawer>; }
-function Drawer({ title, children, onClose }) { return <div className="drawer-backdrop"><aside className="drawer" role="dialog" aria-modal="true"><header><h2>{title}</h2><button onClick={onClose} aria-label="Close">×</button></header>{children}</aside></div>; }
-
-export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) { const [employee, setEmployee] = useState(null); const lookup = useLookups(token, !!employee); const [tab, setTab] = useState("overview"); const [editor, setEditor] = useState(null); const [renew, setRenew] = useState(false); const [resign, setResign] = useState(false); const [busy, setBusy] = useState(false); const load = () => { setEmployee(null); employeesApi.getEmployee(id, token).then(setEmployee).catch((e)=>toast(e.message,"error")); }; useEffect(load,[id,token]); if (!employee) return <section className="section-view"><div className="loading-list"><div className="skeleton"/><div className="skeleton"/></div></section>;
- const can = { personal: !!employee.personal, family: !!employee.family, work: !!employee.work, insurance: !!employee.insurance, financial: !!employee.financial }; const tabs = ["overview", ...Object.keys(can).filter((x)=>can[x]), ...(employee.licenses ? ["licenses", "contracts", "notifications"] : [])]; const refresh = async () => { try { await employeesApi.refreshEmployeeNotifications(id,token); load(); toast("Notifications refreshed.","success"); } catch(e){toast(e.message,"error");} }; const refreshNested = async (type, recordId) => { const latest = await employeesApi.getEmployee(id,token); setEmployee(latest); const records = type === "license" ? latest.licenses : latest.family?.[type === "wife" ? "wives" : "children"]; const item = records?.find((record) => record.id === recordId); if (item) setEditor({type,item}); return item; }; const nestedSave = async (type, item, body) => { setBusy(true); try { if(type === "wife") item ? await employeesApi.updateWife(id,item.id,body,token) : await employeesApi.addWife(id,body,token); else item ? await employeesApi.updateChild(id,item.id,body,token) : await employeesApi.addChild(id,body,token); setEditor(null); load(); toast("Family record saved.","success"); } catch(e){ if (item && e.status === 409) setEditor({...editor, conflict:true}); else toast(e.message,"error"); } finally {setBusy(false);} };
- const calculated = employee.calculated || {}; const insurance = employee.insurance || {}; const comp = calculated.comprehensive_health_deduction || insurance.comprehensive_health;
- return <section className="section-view employees-view"><div className="profile-heading"><button className="back-to-setup" onClick={() => go("employees")}><ArrowLeft size={15}/>Back to Employees</button><div className="profile-title"><span className="employee-monogram">{employee.employee_number}</span><div><p className="eyebrow">EMPLOYEE PROFILE</p><h1 dir="auto">{employee.personal?.arabic_full_name || "Employee"}</h1><p>{employee.personal?.english_full_name} · #{employee.employee_number}</p><div className="profile-meta"><Badge status={employee.employee_status}/><span>{employee.work?.position?.name}</span><span>{employee.work?.department?.name}</span></div></div><div className="profile-actions">{capabilities.includes("employees.edit") && <button className="primary" onClick={()=>go(`employees/${id}/edit`)}><Pencil size={15}/>Edit Employee</button>}{employee.work && capabilities.includes("employees.work.edit") && <button className="secondary" onClick={()=>setRenew(true)}><RefreshCw size={15}/>Renew Contract</button>}{employee.employee_status === "active" && capabilities.includes("employees.edit") && <button className="text-button danger-text" onClick={()=>setResign(true)}>Mark as Resigned / Inactive</button>}</div></div></div><nav className="profile-tabs">{tabs.map((x)=><button key={x} className={tab===x?"selected":""} onClick={()=>setTab(x)}>{x === "overview" ? "Overview" : labels[x]}</button>)}</nav>
- {tab === "overview" && <div><div className="overview-grid"><Info label="Employee ID" value={`#${employee.employee_number}`}/><Info label="Status" value={employee.employee_status}/><Info label="Position" value={employee.work?.position?.name}/><Info label="Department" value={employee.work?.department?.name}/><Info label="Joining Date" value={date(employee.work?.joining_date)}/><Info label="Contract Expiration" value={date(calculated.contract_expiration_date)}/><Info label="Probation Due" value={date(calculated.probation_due_date)}/><Info label="Medical Eligibility" value={calculated.medical_insurance?.is_eligible ? "Eligible" : date(calculated.medical_insurance?.eligibility_date)}/><Info label="Life Eligibility" value={calculated.life_insurance?.is_eligible ? "Eligible" : date(calculated.life_insurance?.eligibility_date)}/></div>{employee.notifications?.length > 0 && <Notice kind="warning">{employee.notifications.length} backend-generated notification{employee.notifications.length === 1 ? "" : "s"} need attention.</Notice>}</div>}
- {tab === "personal" && <DetailSection title="Personal information"><div className="detail-grid">{[["Arabic Full Name",employee.personal.arabic_full_name],["English Full Name",employee.personal.english_full_name],["Gender",employee.personal.gender],["Identity Card",employee.personal.identity_card_number],["Identity Expiration",date(employee.personal.identity_card_expiration_date)],["Age",calculated.age],["Phone",employee.personal.phone],["Religion",employee.personal.religion?.name],["Marital Status",employee.personal.marital_status?.name],["Diploma",employee.personal.diploma?.name],["Governorate",employee.personal.governorate?.name],["Classification",employee.employee_classification === "five_percent" ? "5%" : "Standard"],["Address",employee.personal.address]].map(([a,b])=><Info key={a} label={a} value={b}/>)}</div></DetailSection>}
- {tab === "family" && <DetailSection title="Family" action={<button className="secondary" onClick={()=>setEditor({type:"wife"})}><UserRoundPlus size={15}/>Add Wife</button>}><div className="family-columns"><RecordList title="Wives" records={employee.family.wives} fields={(x)=><><strong>{x.wife_name}</strong><span>{x.identity_card_number}</span><small>{x.is_working ? "Working" : "Non-working"}</small></>} edit={(item)=>setEditor({type:"wife",item})}/><RecordList title="Children" records={employee.family.children} fields={(x)=><><strong>{x.child_name}</strong><span>{x.identity_card_number}</span><small>{employee.family.wives.find((w)=>w.id===x.wife_id)?.wife_name || "No wife linked"}</small></>} edit={(item)=>setEditor({type:"child",item})} action={<button className="text-button" onClick={()=>setEditor({type:"child"})}>+ Add Child</button>}/></div></DetailSection>}
- {tab === "work" && <DetailSection title="Work information"><div className="detail-grid">{[["Department",employee.work.department?.name],["Shift Type",employee.work.shift_type?.name],["Team",employee.work.team?.name],["Position",employee.work.position?.name],["Position Code",employee.work.position?.position_code],["Project",employee.work.project?.name],["Joining Date",date(employee.work.joining_date)],["Contract Signing",date(employee.work.contract_signing_date)],["Contract Expiration",date(employee.work.contract_expiration_date)],["Probation Due",date(employee.work.probation_due_date)]].map(([a,b])=><Info key={a} label={a} value={b}/>)}</div></DetailSection>}
- {tab === "insurance" && <DetailSection title="Insurance & eligibility"><div className="detail-grid"><Info label="Social Insurance" value={insurance.social_insurance_active ? "Active" : "Not active"}/><Info label="Form 1 Incoming Number" value={insurance.form_1_incoming_number}/><Info label="Form 1 Incoming Date" value={date(insurance.form_1_incoming_date)}/><Info label="Form 1 Deadline" value={date(insurance.form_1_deadline_date)}/><Info label={`Medical (${calculated.medical_insurance?.configured_eligibility_months} months)`} value={`${date(calculated.medical_insurance?.eligibility_date)} · ${calculated.medical_insurance?.is_eligible ? "Eligible" : "Not eligible"}`}/><Info label={`Life (${calculated.life_insurance?.configured_eligibility_months} months)`} value={`${date(calculated.life_insurance?.eligibility_date)} · ${calculated.life_insurance?.is_eligible ? "Eligible" : "Not eligible"}`}/></div>{comp && <div className="deduction-card"><div><p className="eyebrow">COMPREHENSIVE HEALTH</p><h3>Backend-calculated deduction</h3><p>Governorate participates: <strong>{comp.governorate_participates ? "Yes" : "No"}</strong></p></div><strong className="deduction-total">{comp.total_percent}%</strong><div className="deduction-lines"><span>Base Employee <b>{comp.base_percent}%</b></span><span>Non-working Wives <b>{comp.non_working_wife_count} × {comp.wife_percent_each}% = {comp.wife_total_percent}%</b></span><span>Children <b>{comp.child_count} × {comp.child_percent_each}% = {comp.child_total_percent}%</b></span></div></div>}</DetailSection>}
- {tab === "financial" && <DetailSection title="Financial"><div className="detail-grid"><Info label="Bank" value={employee.financial.bank?.name}/><Info label="Bank Account Number" value={employee.financial.bank_account_number}/><Info label="Employee Classification" value={employee.employee_classification === "five_percent" ? "5%" : "Standard"}/></div></DetailSection>}
- {tab === "licenses" && <DetailSection title="Licenses" action={capabilities.includes("employees.insurance.edit") && <button className="secondary" onClick={()=>setEditor({type:"license"})}><FilePlus2 size={15}/>Add License</button>}><RecordList title="" records={employee.licenses} fields={(x)=><><strong>{x.license_type?.name}</strong><span>Released {date(x.release_date)} · Expires {date(x.expiry_date)}</span></>} edit={capabilities.includes("employees.insurance.edit") ? (item)=>setEditor({type:"license",item}) : undefined}/></DetailSection>}
- {tab === "contracts" && <DetailSection title="Contract History"><RecordList title="" records={employee.contract_history} fields={(x)=><><strong>{date(x.renewal_signing_date)} → {date(x.renewal_expiration_date)}</strong><span>Previous: {date(x.previous_contract_signing_date)} → {date(x.previous_contract_expiration_date)}</span></>}/></DetailSection>}
- {tab === "notifications" && <DetailSection title="Employee Notifications" action={<button className="secondary" onClick={refresh}><RefreshCw size={15}/>Refresh</button>}><RecordList title="" records={employee.notifications} fields={(x)=><><strong>{x.notification_type.replaceAll("_"," ")}</strong><span>Due {date(x.due_date)} · {x.status} · {x.reminder_threshold_days} day reminder</span><small>{x.reference_key}</small></>}/></DetailSection>}
- {editor?.type === "wife" || editor?.type === "child" ? <FamilyEditor type={editor.type} item={editor.item} wives={employee.family?.wives || []} conflict={editor.conflict} refreshLatest={refreshNested} keepEditing={()=>setEditor({...editor, conflict:false})} onClose={()=>setEditor(null)} save={(body)=>nestedSave(editor.type,editor.item,body)}/> : null}
- {editor?.type === "license" && (
-   <LicenseEditor item={editor.item} types={lookup?.["license-types"] || []} conflict={editor.conflict} refreshLatest={refreshNested} keepEditing={()=>setEditor({...editor, conflict:false})} onClose={()=>setEditor(null)} save={async (body) => { setBusy(true); try { editor.item ? await employeesApi.updateLicense(id, editor.item.id, body, token) : await employeesApi.addLicense(id, body, token); invalidateDashboardData(); setEditor(null); load(); toast("License saved.", "success"); } catch (e) { if (editor.item && e.status === 409) setEditor({...editor, conflict:true}); else toast(e.message,"error"); } finally { setBusy(false); } }}/>
- )}
- {renew && <RenewDialog employee={employee} onClose={()=>setRenew(false)} save={async (body) => { setBusy(true); try { await employeesApi.renewContract(id, body, token); invalidateDashboardData(); setRenew(false); load(); toast("Contract renewed.", "success"); } catch (e) { toast(e.message, "error"); } finally { setBusy(false); } }} busy={busy}/>}
- {resign && <ResignDialog reasons={lookup?.["leaving-reasons"] || []} busy={busy} onClose={()=>setResign(false)} save={async (body) => { setBusy(true); try { await employeesApi.updateEmployeeStatus(id, { ...body, expected_updated_at: employee.updated_at }, token); invalidateDashboardData(); setResign(false); load(); toast("Employee status updated.", "success"); } catch (e) { if (e.status === 409 && e.code === "employee_conflict") toast("Another user updated this employee. Refresh the latest data before changing status.", "error"); else toast(e.message, "error"); } finally { setBusy(false); } }}/>}</section>;
+function Info({ label, value }) {
+  return (
+    <article className="info-row">
+      <span>{label}</span>
+      <strong>{value || "—"}</strong>
+    </article>
+  );
 }
-function DetailSection({ title, action, children }) { return <section className="detail-section"><header><div><h2>{title}</h2></div>{action}</header>{children}</section>; }
-function RecordList({ title, records, fields, edit, action }) { return <section className="record-list"><header>{title && <h3>{title}</h3>}{action}</header>{records?.length ? records.map((item)=><article key={item.id}><div>{fields(item)}</div>{edit && <button className="text-button" onClick={()=>edit(item)}>Edit</button>}</article>) : <p className="muted">No records added yet.</p>}</section>; }
-function LicenseEditor({ item, types, onClose, save, conflict, refreshLatest, keepEditing }) { const [form,setForm]=useState(item ? {license_type_id:item.license_type_id,release_date:item.release_date,expiry_date:item.expiry_date} : {license_type_id:"",release_date:"",expiry_date:""}); const refresh = async () => { const latest = await refreshLatest("license", item.id); if (latest) setForm({license_type_id:latest.license_type_id,release_date:latest.release_date,expiry_date:latest.expiry_date}); }; return <Drawer title={`${item ? "Edit" : "Add"} License`} onClose={onClose}>{conflict && <Notice kind="danger">This record was updated by another user.<span className="notice-actions"><button type="button" className="secondary" onClick={refresh}>Refresh Latest Data</button><button type="button" className="text-button" onClick={keepEditing}>Keep Editing</button></span></Notice>}<form onSubmit={(e)=>{e.preventDefault();if(form.expiry_date < form.release_date) return;save({...form,license_type_id:Number(form.license_type_id),...(item ? {expected_updated_at:item.updated_at} : {})});}}><Select label="License Type" name="license_type_id" form={form} setForm={setForm} options={types} required/><Field label="Release Date" name="release_date" form={form} setForm={setForm} type="date" required/><Field label="Expiry Date" name="expiry_date" form={form} setForm={setForm} type="date" required hint="Must be on or after release date"/><button className="primary wide">Save License</button></form></Drawer>; }
-function RenewDialog({ employee, onClose, save, busy }) { const [value,setValue]=useState(""); return <Drawer title="Renew Contract" onClose={onClose}><div className="renew-context"><Info label="Current Contract Signing" value={date(employee.work.contract_signing_date)}/><Info label="Current Expiration" value={date(employee.work.contract_expiration_date)}/></div><form onSubmit={(e)=>{e.preventDefault();save({renewal_signing_date:value});}}><label>Renewal Signing Date<input required type="date" value={value} onChange={(e)=>setValue(e.target.value)}/></label><Notice>The backend will calculate the new expiration and reject duplicate renewal dates.</Notice><button className="primary wide" disabled={busy}>{busy?"Renewing…":"Renew Contract"}</button></form></Drawer>; }
-function ResignDialog({ reasons, onClose, save, busy }) { const [form,setForm]=useState({employee_status:"resigned",leaving_date:"",leaving_reason_id:"",leaving_comment:"",annual_days_settled:"",form_6_incoming_number:"",form_6_incoming_date:"",form_6_reason:""}); return <Drawer title="Mark as Resigned / Inactive" onClose={onClose}><form onSubmit={(e)=>{e.preventDefault();save({...form,leaving_reason_id:Number(form.leaving_reason_id),annual_days_settled:form.annual_days_settled === "" ? null : Number(form.annual_days_settled)});}}><label>Status<select value={form.employee_status} onChange={(e)=>setForm({...form,employee_status:e.target.value})}><option value="resigned">Resigned</option><option value="inactive">Inactive</option></select></label><Field label="Leaving Date" name="leaving_date" form={form} setForm={setForm} type="date" required/><Select label="Leaving Reason" name="leaving_reason_id" form={form} setForm={setForm} options={reasons} required/><label>Leaving Comment<textarea value={form.leaving_comment} onChange={(e)=>setForm({...form,leaving_comment:e.target.value})}/></label><Field label="Annual Days Settled" name="annual_days_settled" form={form} setForm={setForm} type="number"/><Field label="Form 6 Incoming Number" name="form_6_incoming_number" form={form} setForm={setForm}/><Field label="Form 6 Incoming Date" name="form_6_incoming_date" form={form} setForm={setForm} type="date"/><label>Form 6 Reason<textarea value={form.form_6_reason} onChange={(e)=>setForm({...form,form_6_reason:e.target.value})}/></label><button className="danger wide" disabled={busy}>{busy?"Updating…":"Confirm status change"}</button></form></Drawer>; }
+function FamilyEditor({
+  type,
+  item,
+  wives,
+  onClose,
+  save,
+  conflict,
+  refreshLatest,
+  keepEditing,
+}) {
+  const [form, setForm] = useState(
+    item ||
+      (type === "wife"
+        ? { wife_name: "", identity_card_number: "", is_working: false }
+        : { child_name: "", identity_card_number: "", wife_id: "" }),
+  );
+  const title = `${item?.id ? "Edit" : "Add"} ${type === "wife" ? "Wife" : "Child"}`;
+  const refresh = async () => {
+    const latest = await refreshLatest(type, item.id);
+    if (latest) setForm(latest);
+  };
+  return (
+    <Drawer title={title} onClose={onClose}>
+      {conflict && (
+        <Notice kind="danger">
+          This record was updated by another user.
+          <span className="notice-actions">
+            <button type="button" className="secondary" onClick={refresh}>
+              Refresh Latest Data
+            </button>
+            <button type="button" className="text-button" onClick={keepEditing}>
+              Keep Editing
+            </button>
+          </span>
+        </Notice>
+      )}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!/^\d{14}$/.test(form.identity_card_number)) return;
+          save({
+            ...form,
+            wife_id: form.wife_id || null,
+            ...(item ? { expected_updated_at: item.updated_at } : {}),
+          });
+        }}
+      >
+        <Field
+          label={type === "wife" ? "Wife Name" : "Child Name"}
+          name={type === "wife" ? "wife_name" : "child_name"}
+          form={form}
+          setForm={setForm}
+          required
+        />
+        <Field
+          label="Identity Card Number"
+          name="identity_card_number"
+          form={form}
+          setForm={setForm}
+          required
+          hint="14 digits"
+        />
+        {type === "wife" ? (
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={!!form.is_working}
+              onChange={(e) =>
+                setForm({ ...form, is_working: e.target.checked })
+              }
+            />
+            Is working
+          </label>
+        ) : (
+          <label>
+            Related Wife (optional)
+            <select
+              value={form.wife_id || ""}
+              onChange={(e) => setForm({ ...form, wife_id: e.target.value })}
+            >
+              <option value="">Not specified</option>
+              {wives.map((wife) => (
+                <option key={wife.id} value={wife.id}>
+                  {wife.wife_name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <button className="primary wide">Save</button>
+      </form>
+    </Drawer>
+  );
+}
+function Drawer({ title, children, onClose }) {
+  return (
+    <div className="drawer-backdrop">
+      <aside className="drawer" role="dialog" aria-modal="true">
+        <header>
+          <h2>{title}</h2>
+          <button onClick={onClose} aria-label="Close">
+            ×
+          </button>
+        </header>
+        {children}
+      </aside>
+    </div>
+  );
+}
+
+export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
+  const [employee, setEmployee] = useState(null);
+  const requestId = useRef(0);
+  const lookup = useLookups(token, !!employee);
+  const [tab, setTab] = useState("overview");
+  const [editor, setEditor] = useState(null);
+  const [renew, setRenew] = useState(false);
+  const [resign, setResign] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(
+    (clear = true) => {
+      const currentRequest = ++requestId.current;
+      if (clear) setEmployee(null);
+      return employeesApi
+        .getEmployee(id, token)
+        .then((result) => {
+          if (currentRequest === requestId.current) setEmployee(result);
+        })
+        .catch((e) => {
+          if (clear && currentRequest === requestId.current)
+            toast(e.message, "error");
+        });
+    },
+    [id, token, toast],
+  );
+  useEffect(() => {
+    load();
+    return () => {
+      requestId.current += 1;
+    };
+  }, [load]);
+  useEmployeeInvalidation(
+    id,
+    token,
+    useCallback(() => load(false), [load]),
+  );
+  if (!employee)
+    return (
+      <section className="section-view">
+        <div className="loading-list">
+          <div className="skeleton" />
+          <div className="skeleton" />
+        </div>
+      </section>
+    );
+  const can = {
+    personal: !!employee.personal,
+    family: !!employee.family,
+    work: !!employee.work,
+    insurance: !!employee.insurance,
+    financial: !!employee.financial,
+  };
+  const tabs = [
+    "overview",
+    ...Object.keys(can).filter((x) => can[x]),
+    ...(employee.licenses ? ["licenses", "contracts", "notifications"] : []),
+  ];
+  const refresh = async () => {
+    try {
+      await employeesApi.refreshEmployeeNotifications(id, token);
+      load();
+      toast("Notifications refreshed.", "success");
+    } catch (e) {
+      toast(e.message, "error");
+    }
+  };
+  const refreshNested = async (type, recordId) => {
+    const latest = await employeesApi.getEmployee(id, token);
+    setEmployee(latest);
+    const records =
+      type === "license"
+        ? latest.licenses
+        : latest.family?.[type === "wife" ? "wives" : "children"];
+    const item = records?.find((record) => record.id === recordId);
+    if (item) setEditor({ type, item });
+    return item;
+  };
+  const nestedSave = async (type, item, body) => {
+    setBusy(true);
+    try {
+      if (type === "wife")
+        item
+          ? await employeesApi.updateWife(id, item.id, body, token)
+          : await employeesApi.addWife(id, body, token);
+      else
+        item
+          ? await employeesApi.updateChild(id, item.id, body, token)
+          : await employeesApi.addChild(id, body, token);
+      setEditor(null);
+      load();
+      toast("Family record saved.", "success");
+    } catch (e) {
+      if (item && e.status === 409) setEditor({ ...editor, conflict: true });
+      else toast(e.message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const calculated = employee.calculated || {};
+  const insurance = employee.insurance || {};
+  const comp =
+    calculated.comprehensive_health_deduction || insurance.comprehensive_health;
+  return (
+    <section className="section-view employees-view">
+      <div className="profile-heading">
+        <button className="back-to-setup" onClick={() => go("employees")}>
+          <ArrowLeft size={15} />
+          Back to Employees
+        </button>
+        <div className="profile-title">
+          <span className="employee-monogram">{employee.employee_number}</span>
+          <div>
+            <p className="eyebrow">EMPLOYEE PROFILE</p>
+            <h1 dir="auto">
+              {employee.personal?.arabic_full_name || "Employee"}
+            </h1>
+            <p>
+              {employee.personal?.english_full_name} · #
+              {employee.employee_number}
+            </p>
+            <div className="profile-meta">
+              <Badge status={employee.employee_status} />
+              <span>{employee.work?.position?.name}</span>
+              <span>{employee.work?.department?.name}</span>
+            </div>
+          </div>
+          <div className="profile-actions">
+            {capabilities.includes("employees.edit") && (
+              <button
+                className="primary"
+                onClick={() => go(`employees/${id}/edit`)}
+              >
+                <Pencil size={15} />
+                Edit Employee
+              </button>
+            )}
+            {employee.work && capabilities.includes("employees.work.edit") && (
+              <button className="secondary" onClick={() => setRenew(true)}>
+                <RefreshCw size={15} />
+                Renew Contract
+              </button>
+            )}
+            {employee.employee_status === "active" &&
+              capabilities.includes("employees.edit") && (
+                <button
+                  className="text-button danger-text"
+                  onClick={() => setResign(true)}
+                >
+                  Mark as Resigned / Inactive
+                </button>
+              )}
+          </div>
+        </div>
+      </div>
+      <nav className="profile-tabs">
+        {tabs.map((x) => (
+          <button
+            key={x}
+            className={tab === x ? "selected" : ""}
+            onClick={() => setTab(x)}
+          >
+            {x === "overview" ? "Overview" : labels[x]}
+          </button>
+        ))}
+      </nav>
+      {tab === "overview" && (
+        <div>
+          <div className="overview-grid">
+            <Info label="Employee ID" value={`#${employee.employee_number}`} />
+            <Info label="Status" value={employee.employee_status} />
+            <Info label="Position" value={employee.work?.position?.name} />
+            <Info label="Department" value={employee.work?.department?.name} />
+            <Info
+              label="Joining Date"
+              value={date(employee.work?.joining_date)}
+            />
+            <Info
+              label="Contract Expiration"
+              value={date(calculated.contract_expiration_date)}
+            />
+            <Info
+              label="Probation Due"
+              value={date(calculated.probation_due_date)}
+            />
+            <Info
+              label="Medical Eligibility"
+              value={
+                calculated.medical_insurance?.is_eligible
+                  ? "Eligible"
+                  : date(calculated.medical_insurance?.eligibility_date)
+              }
+            />
+            <Info
+              label="Life Eligibility"
+              value={
+                calculated.life_insurance?.is_eligible
+                  ? "Eligible"
+                  : date(calculated.life_insurance?.eligibility_date)
+              }
+            />
+          </div>
+          {employee.notifications?.length > 0 && (
+            <Notice kind="warning">
+              {employee.notifications.length} backend-generated notification
+              {employee.notifications.length === 1 ? "" : "s"} need attention.
+            </Notice>
+          )}
+        </div>
+      )}
+      {tab === "personal" && (
+        <DetailSection title="Personal information">
+          <div className="detail-grid">
+            {[
+              ["Arabic Full Name", employee.personal.arabic_full_name],
+              ["English Full Name", employee.personal.english_full_name],
+              ["Gender", employee.personal.gender],
+              ["Identity Card", employee.personal.identity_card_number],
+              [
+                "Identity Expiration",
+                date(employee.personal.identity_card_expiration_date),
+              ],
+              ["Age", calculated.age],
+              ["Phone", employee.personal.phone],
+              ["Religion", employee.personal.religion?.name],
+              ["Marital Status", employee.personal.marital_status?.name],
+              ["Diploma", employee.personal.diploma?.name],
+              ["Governorate", employee.personal.governorate?.name],
+              [
+                "Classification",
+                employee.employee_classification === "five_percent"
+                  ? "5%"
+                  : "Standard",
+              ],
+              ["Address", employee.personal.address],
+            ].map(([a, b]) => (
+              <Info key={a} label={a} value={b} />
+            ))}
+          </div>
+        </DetailSection>
+      )}
+      {tab === "family" && (
+        <DetailSection
+          title="Family"
+          action={
+            <button
+              className="secondary"
+              onClick={() => setEditor({ type: "wife" })}
+            >
+              <UserRoundPlus size={15} />
+              Add Wife
+            </button>
+          }
+        >
+          <div className="family-columns">
+            <RecordList
+              title="Wives"
+              records={employee.family.wives}
+              fields={(x) => (
+                <>
+                  <strong>{x.wife_name}</strong>
+                  <span>{x.identity_card_number}</span>
+                  <small>{x.is_working ? "Working" : "Non-working"}</small>
+                </>
+              )}
+              edit={(item) => setEditor({ type: "wife", item })}
+            />
+            <RecordList
+              title="Children"
+              records={employee.family.children}
+              fields={(x) => (
+                <>
+                  <strong>{x.child_name}</strong>
+                  <span>{x.identity_card_number}</span>
+                  <small>
+                    {employee.family.wives.find((w) => w.id === x.wife_id)
+                      ?.wife_name || "No wife linked"}
+                  </small>
+                </>
+              )}
+              edit={(item) => setEditor({ type: "child", item })}
+              action={
+                <button
+                  className="text-button"
+                  onClick={() => setEditor({ type: "child" })}
+                >
+                  + Add Child
+                </button>
+              }
+            />
+          </div>
+        </DetailSection>
+      )}
+      {tab === "work" && (
+        <DetailSection title="Work information">
+          <div className="detail-grid">
+            {[
+              ["Department", employee.work.department?.name],
+              ["Shift Type", employee.work.shift_type?.name],
+              ["Team", employee.work.team?.name],
+              ["Position", employee.work.position?.name],
+              ["Position Code", employee.work.position?.position_code],
+              ["Project", employee.work.project?.name],
+              ["Joining Date", date(employee.work.joining_date)],
+              ["Contract Signing", date(employee.work.contract_signing_date)],
+              [
+                "Contract Expiration",
+                date(employee.work.contract_expiration_date),
+              ],
+              ["Probation Due", date(employee.work.probation_due_date)],
+            ].map(([a, b]) => (
+              <Info key={a} label={a} value={b} />
+            ))}
+          </div>
+        </DetailSection>
+      )}
+      {tab === "insurance" && (
+        <DetailSection title="Insurance & eligibility">
+          <div className="detail-grid">
+            <Info
+              label="Social Insurance"
+              value={
+                insurance.social_insurance_active ? "Active" : "Not active"
+              }
+            />
+            <Info
+              label="Form 1 Incoming Number"
+              value={insurance.form_1_incoming_number}
+            />
+            <Info
+              label="Form 1 Incoming Date"
+              value={date(insurance.form_1_incoming_date)}
+            />
+            <Info
+              label="Form 1 Deadline"
+              value={date(insurance.form_1_deadline_date)}
+            />
+            <Info
+              label={`Medical (${calculated.medical_insurance?.configured_eligibility_months} months)`}
+              value={`${date(calculated.medical_insurance?.eligibility_date)} · ${calculated.medical_insurance?.is_eligible ? "Eligible" : "Not eligible"}`}
+            />
+            <Info
+              label={`Life (${calculated.life_insurance?.configured_eligibility_months} months)`}
+              value={`${date(calculated.life_insurance?.eligibility_date)} · ${calculated.life_insurance?.is_eligible ? "Eligible" : "Not eligible"}`}
+            />
+          </div>
+          {comp && (
+            <div className="deduction-card">
+              <div>
+                <p className="eyebrow">COMPREHENSIVE HEALTH</p>
+                <h3>Backend-calculated deduction</h3>
+                <p>
+                  Governorate participates:{" "}
+                  <strong>
+                    {comp.governorate_participates ? "Yes" : "No"}
+                  </strong>
+                </p>
+              </div>
+              <strong className="deduction-total">{comp.total_percent}%</strong>
+              <div className="deduction-lines">
+                <span>
+                  Base Employee <b>{comp.base_percent}%</b>
+                </span>
+                <span>
+                  Non-working Wives{" "}
+                  <b>
+                    {comp.non_working_wife_count} × {comp.wife_percent_each}% ={" "}
+                    {comp.wife_total_percent}%
+                  </b>
+                </span>
+                <span>
+                  Children{" "}
+                  <b>
+                    {comp.child_count} × {comp.child_percent_each}% ={" "}
+                    {comp.child_total_percent}%
+                  </b>
+                </span>
+              </div>
+            </div>
+          )}
+        </DetailSection>
+      )}
+      {tab === "financial" && (
+        <DetailSection title="Financial">
+          <div className="detail-grid">
+            <Info label="Bank" value={employee.financial.bank?.name} />
+            <Info
+              label="Bank Account Number"
+              value={employee.financial.bank_account_number}
+            />
+            <Info
+              label="Employee Classification"
+              value={
+                employee.employee_classification === "five_percent"
+                  ? "5%"
+                  : "Standard"
+              }
+            />
+          </div>
+        </DetailSection>
+      )}
+      {tab === "licenses" && (
+        <DetailSection
+          title="Licenses"
+          action={
+            capabilities.includes("employees.insurance.edit") && (
+              <button
+                className="secondary"
+                onClick={() => setEditor({ type: "license" })}
+              >
+                <FilePlus2 size={15} />
+                Add License
+              </button>
+            )
+          }
+        >
+          <RecordList
+            title=""
+            records={employee.licenses}
+            fields={(x) => (
+              <>
+                <strong>{x.license_type?.name}</strong>
+                <span>
+                  Released {date(x.release_date)} · Expires{" "}
+                  {date(x.expiry_date)}
+                </span>
+              </>
+            )}
+            edit={
+              capabilities.includes("employees.insurance.edit")
+                ? (item) => setEditor({ type: "license", item })
+                : undefined
+            }
+          />
+        </DetailSection>
+      )}
+      {tab === "contracts" && (
+        <DetailSection title="Contract History">
+          <RecordList
+            title=""
+            records={employee.contract_history}
+            fields={(x) => (
+              <>
+                <strong>
+                  {date(x.renewal_signing_date)} →{" "}
+                  {date(x.renewal_expiration_date)}
+                </strong>
+                <span>
+                  Previous: {date(x.previous_contract_signing_date)} →{" "}
+                  {date(x.previous_contract_expiration_date)}
+                </span>
+              </>
+            )}
+          />
+        </DetailSection>
+      )}
+      {tab === "notifications" && (
+        <DetailSection
+          title="Employee Notifications"
+          action={
+            <button className="secondary" onClick={refresh}>
+              <RefreshCw size={15} />
+              Refresh
+            </button>
+          }
+        >
+          <RecordList
+            title=""
+            records={employee.notifications}
+            fields={(x) => (
+              <>
+                <strong>{x.notification_type.replaceAll("_", " ")}</strong>
+                <span>
+                  Due {date(x.due_date)} · {x.status} ·{" "}
+                  {x.reminder_threshold_days} day reminder
+                </span>
+                <small>{x.reference_key}</small>
+              </>
+            )}
+          />
+        </DetailSection>
+      )}
+      {editor?.type === "wife" || editor?.type === "child" ? (
+        <FamilyEditor
+          type={editor.type}
+          item={editor.item}
+          wives={employee.family?.wives || []}
+          conflict={editor.conflict}
+          refreshLatest={refreshNested}
+          keepEditing={() => setEditor({ ...editor, conflict: false })}
+          onClose={() => setEditor(null)}
+          save={(body) => nestedSave(editor.type, editor.item, body)}
+        />
+      ) : null}
+      {editor?.type === "license" && (
+        <LicenseEditor
+          item={editor.item}
+          types={lookup?.["license-types"] || []}
+          conflict={editor.conflict}
+          refreshLatest={refreshNested}
+          keepEditing={() => setEditor({ ...editor, conflict: false })}
+          onClose={() => setEditor(null)}
+          save={async (body) => {
+            setBusy(true);
+            try {
+              editor.item
+                ? await employeesApi.updateLicense(
+                    id,
+                    editor.item.id,
+                    body,
+                    token,
+                  )
+                : await employeesApi.addLicense(id, body, token);
+              invalidateDashboardData();
+              setEditor(null);
+              load();
+              toast("License saved.", "success");
+            } catch (e) {
+              if (editor.item && e.status === 409)
+                setEditor({ ...editor, conflict: true });
+              else toast(e.message, "error");
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
+      )}
+      {renew && (
+        <RenewDialog
+          employee={employee}
+          onClose={() => setRenew(false)}
+          save={async (body) => {
+            setBusy(true);
+            try {
+              await employeesApi.renewContract(id, body, token);
+              invalidateDashboardData();
+              setRenew(false);
+              load();
+              toast("Contract renewed.", "success");
+            } catch (e) {
+              toast(e.message, "error");
+            } finally {
+              setBusy(false);
+            }
+          }}
+          busy={busy}
+        />
+      )}
+      {resign && (
+        <ResignDialog
+          reasons={lookup?.["leaving-reasons"] || []}
+          busy={busy}
+          onClose={() => setResign(false)}
+          save={async (body) => {
+            setBusy(true);
+            try {
+              await employeesApi.updateEmployeeStatus(
+                id,
+                { ...body, expected_updated_at: employee.updated_at },
+                token,
+              );
+              invalidateDashboardData();
+              setResign(false);
+              load();
+              toast("Employee status updated.", "success");
+            } catch (e) {
+              if (e.status === 409 && e.code === "employee_conflict")
+                toast(
+                  "Another user updated this employee. Refresh the latest data before changing status.",
+                  "error",
+                );
+              else toast(e.message, "error");
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
+      )}
+    </section>
+  );
+}
+function DetailSection({ title, action, children }) {
+  return (
+    <section className="detail-section">
+      <header>
+        <div>
+          <h2>{title}</h2>
+        </div>
+        {action}
+      </header>
+      {children}
+    </section>
+  );
+}
+function RecordList({ title, records, fields, edit, action }) {
+  return (
+    <section className="record-list">
+      <header>
+        {title && <h3>{title}</h3>}
+        {action}
+      </header>
+      {records?.length ? (
+        records.map((item) => (
+          <article key={item.id}>
+            <div>{fields(item)}</div>
+            {edit && (
+              <button className="text-button" onClick={() => edit(item)}>
+                Edit
+              </button>
+            )}
+          </article>
+        ))
+      ) : (
+        <p className="muted">No records added yet.</p>
+      )}
+    </section>
+  );
+}
+function LicenseEditor({
+  item,
+  types,
+  onClose,
+  save,
+  conflict,
+  refreshLatest,
+  keepEditing,
+}) {
+  const [form, setForm] = useState(
+    item
+      ? {
+          license_type_id: item.license_type_id,
+          release_date: item.release_date,
+          expiry_date: item.expiry_date,
+        }
+      : { license_type_id: "", release_date: "", expiry_date: "" },
+  );
+  const refresh = async () => {
+    const latest = await refreshLatest("license", item.id);
+    if (latest)
+      setForm({
+        license_type_id: latest.license_type_id,
+        release_date: latest.release_date,
+        expiry_date: latest.expiry_date,
+      });
+  };
+  return (
+    <Drawer title={`${item ? "Edit" : "Add"} License`} onClose={onClose}>
+      {conflict && (
+        <Notice kind="danger">
+          This record was updated by another user.
+          <span className="notice-actions">
+            <button type="button" className="secondary" onClick={refresh}>
+              Refresh Latest Data
+            </button>
+            <button type="button" className="text-button" onClick={keepEditing}>
+              Keep Editing
+            </button>
+          </span>
+        </Notice>
+      )}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (form.expiry_date < form.release_date) return;
+          save({
+            ...form,
+            license_type_id: Number(form.license_type_id),
+            ...(item ? { expected_updated_at: item.updated_at } : {}),
+          });
+        }}
+      >
+        <Select
+          label="License Type"
+          name="license_type_id"
+          form={form}
+          setForm={setForm}
+          options={types}
+          required
+        />
+        <Field
+          label="Release Date"
+          name="release_date"
+          form={form}
+          setForm={setForm}
+          type="date"
+          required
+        />
+        <Field
+          label="Expiry Date"
+          name="expiry_date"
+          form={form}
+          setForm={setForm}
+          type="date"
+          required
+          hint="Must be on or after release date"
+        />
+        <button className="primary wide">Save License</button>
+      </form>
+    </Drawer>
+  );
+}
+function RenewDialog({ employee, onClose, save, busy }) {
+  const [value, setValue] = useState("");
+  return (
+    <Drawer title="Renew Contract" onClose={onClose}>
+      <div className="renew-context">
+        <Info
+          label="Current Contract Signing"
+          value={date(employee.work.contract_signing_date)}
+        />
+        <Info
+          label="Current Expiration"
+          value={date(employee.work.contract_expiration_date)}
+        />
+      </div>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          save({ renewal_signing_date: value });
+        }}
+      >
+        <label>
+          Renewal Signing Date
+          <input
+            required
+            type="date"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+          />
+        </label>
+        <Notice>
+          The backend will calculate the new expiration and reject duplicate
+          renewal dates.
+        </Notice>
+        <button className="primary wide" disabled={busy}>
+          {busy ? "Renewing…" : "Renew Contract"}
+        </button>
+      </form>
+    </Drawer>
+  );
+}
+function ResignDialog({ reasons, onClose, save, busy }) {
+  const [form, setForm] = useState({
+    employee_status: "resigned",
+    leaving_date: "",
+    leaving_reason_id: "",
+    leaving_comment: "",
+    annual_days_settled: "",
+    form_6_incoming_number: "",
+    form_6_incoming_date: "",
+    form_6_reason: "",
+  });
+  return (
+    <Drawer title="Mark as Resigned / Inactive" onClose={onClose}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          save({
+            ...form,
+            leaving_reason_id: Number(form.leaving_reason_id),
+            annual_days_settled:
+              form.annual_days_settled === ""
+                ? null
+                : Number(form.annual_days_settled),
+          });
+        }}
+      >
+        <label>
+          Status
+          <select
+            value={form.employee_status}
+            onChange={(e) =>
+              setForm({ ...form, employee_status: e.target.value })
+            }
+          >
+            <option value="resigned">Resigned</option>
+            <option value="inactive">Inactive</option>
+          </select>
+        </label>
+        <Field
+          label="Leaving Date"
+          name="leaving_date"
+          form={form}
+          setForm={setForm}
+          type="date"
+          required
+        />
+        <Select
+          label="Leaving Reason"
+          name="leaving_reason_id"
+          form={form}
+          setForm={setForm}
+          options={reasons}
+          required
+        />
+        <label>
+          Leaving Comment
+          <textarea
+            value={form.leaving_comment}
+            onChange={(e) =>
+              setForm({ ...form, leaving_comment: e.target.value })
+            }
+          />
+        </label>
+        <Field
+          label="Annual Days Settled"
+          name="annual_days_settled"
+          form={form}
+          setForm={setForm}
+          type="number"
+        />
+        <Field
+          label="Form 6 Incoming Number"
+          name="form_6_incoming_number"
+          form={form}
+          setForm={setForm}
+        />
+        <Field
+          label="Form 6 Incoming Date"
+          name="form_6_incoming_date"
+          form={form}
+          setForm={setForm}
+          type="date"
+        />
+        <label>
+          Form 6 Reason
+          <textarea
+            value={form.form_6_reason}
+            onChange={(e) =>
+              setForm({ ...form, form_6_reason: e.target.value })
+            }
+          />
+        </label>
+        <button className="danger wide" disabled={busy}>
+          {busy ? "Updating…" : "Confirm status change"}
+        </button>
+      </form>
+    </Drawer>
+  );
+}

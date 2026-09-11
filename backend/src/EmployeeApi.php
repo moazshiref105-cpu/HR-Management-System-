@@ -146,6 +146,7 @@ final class EmployeeApi
         $row = $updated[0] ?? null;
         if (!is_array($row)) $this->throwUpdateFailure($id);
         $this->refreshNotificationsSafely($id);
+        $this->publishEmployeeInvalidationSafely($id, 'employee_update');
         return $this->mutationResult($row);
     }
 
@@ -167,6 +168,7 @@ final class EmployeeApi
         $row = $updated[0] ?? null;
         if (!is_array($row)) $this->throwUpdateFailure($id);
         $this->refreshNotificationsSafely($id);
+        $this->publishEmployeeInvalidationSafely($id, 'employee_status');
         return $this->mutationResult($row);
     }
 
@@ -182,6 +184,7 @@ final class EmployeeApi
             $record['employee_id'] = $employeeId;
             $result = $this->supabase->service('POST', '/rest/v1/' . $table, [$record], ['Prefer: return=representation']);
             $this->refreshNotificationsSafely($employeeId);
+            $this->publishEmployeeInvalidationSafely($employeeId, 'employee_' . $resource . '_create');
             return $result;
         }
         if ($method === 'PATCH' && $id > 0) {
@@ -192,6 +195,7 @@ final class EmployeeApi
             $result = $this->supabase->service('PATCH', $path, $record, ['Prefer: return=representation']);
             if (!isset($result[0]) || !is_array($result[0])) $this->throwNestedUpdateFailure($table, $employeeId, $id, $resource);
             $this->refreshNotificationsSafely($employeeId);
+            $this->publishEmployeeInvalidationSafely($employeeId, 'employee_' . $resource . '_update');
             return $result;
         }
         throw new HttpException('Route not found.', 404);
@@ -211,6 +215,7 @@ final class EmployeeApi
             throw $exception;
         }
         $this->refreshNotificationsSafely($id);
+        $this->publishEmployeeInvalidationSafely($id, 'employee_contract_renewal');
         return ['renewal' => $result];
     }
 
@@ -271,11 +276,18 @@ final class EmployeeApi
         }
     }
 
+    private function publishEmployeeInvalidationSafely(string $id, string $operation): void
+    {
+        try { $this->supabase->publishEmployeeInvalidation($id); }
+        catch (\Throwable) { error_log('HMS employee realtime broadcast failed operation=' . $operation . ' employee_id=' . $id); }
+    }
+
     /** @param array<string,mixed> $actor */
     private function refresh(string $id, array $actor): array
     {
         $this->allow($actor, 'employees.view');
         $this->refreshNotifications($id);
+        $this->publishEmployeeInvalidationSafely($id, 'employee_notifications_refresh');
         return $this->supabase->service('GET', '/rest/v1/employee_notifications?employee_id=eq.' . rawurlencode($id) . '&select=*&order=due_date,reminder_threshold_days');
     }
 

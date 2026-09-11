@@ -115,6 +115,14 @@ final class SupabaseClient
         );
     }
 
+    public function publishEmployeeInvalidation(string $employeeId): void
+    {
+        if (!preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $employeeId)) {
+            throw new RuntimeException('Invalid employee invalidation target.');
+        }
+        $this->request('POST', '/realtime/v1/api/broadcast/' . rawurlencode('employee:' . $employeeId) . '/events/employee_invalidated?private=true', $this->secretKey, ['type' => 'employee_invalidated'], []);
+    }
+
     private function request(string $method, string $path, string $authorization, ?array $payload, array $headers): mixed
     {
         $curl = $this->createHandle($method, $path, $authorization, $payload, $headers);
