@@ -228,53 +228,100 @@ function Login({ onSession }) {
   };
   return (
     <main className="login-page">
-      <section className="login-panel">
-        <img src={logo} alt="JUSHI" className="login-logo" />
-        <div>
-          <p className="eyebrow">HR MANAGEMENT SYSTEM</p>
-          <h1>Welcome back</h1>
-          <p className="muted">
-            Sign in to manage your people, policies, and operations.
-          </p>
-        </div>
-        <form onSubmit={submit} noValidate>
-          <label>
-            Email
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="email"
-              aria-invalid={!!error}
-              placeholder="you@company.com"
-            />
-          </label>
-          <label>
-            Password
-            <span className="password-wrap">
-              <input
-                type={show ? "text" : "password"}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-                placeholder="Enter your password"
-              />
-              <button type="button" onClick={() => setShow(!show)}>
-                {show ? "Hide" : "Show"}
-              </button>
+      <section className="login-brand-panel" aria-label="HR Management System">
+        <div className="login-brand-content">
+          <div className="login-brand-lockup">
+            <span className="login-logo-frame">
+              <img src={logo} alt="JUSHI" className="login-logo" />
             </span>
-          </label>
-          {error && (
-            <p className="form-error" role="alert">
-              {error}
+            <span>HR Management System</span>
+          </div>
+          <div className="login-brand-copy">
+            <p className="eyebrow">ONE SECURE WORKSPACE</p>
+            <h1>People operations, thoughtfully connected.</h1>
+            <p>
+              Manage people, policies, and operations from one secure
+              workspace.
             </p>
-          )}
-          <button className="primary wide" disabled={busy}>
-            {busy ? "Signing in…" : "Sign In"}
-          </button>
-        </form>
+          </div>
+          <div className="workforce-visual" aria-hidden="true">
+            <div className="visual-grid" />
+            <div className="visual-orbit visual-orbit-one" />
+            <div className="visual-orbit visual-orbit-two" />
+            <div className="visual-node visual-node-main"><span /></div>
+            <div className="visual-node visual-node-left"><span /></div>
+            <div className="visual-node visual-node-right"><span /></div>
+            <div className="visual-node visual-node-bottom"><span /></div>
+            <div className="visual-connector visual-connector-left" />
+            <div className="visual-connector visual-connector-right" />
+            <div className="visual-connector visual-connector-bottom" />
+          </div>
+          <div className="login-value-list">
+            <span><b>01</b> People</span>
+            <span><b>02</b> Operations</span>
+            <span><b>03</b> Insights</span>
+          </div>
+        </div>
+        <footer>Designed by Moaz Shiref</footer>
       </section>
-      <footer>By Moaz Shiref</footer>
+      <section className="login-form-panel">
+        <div className="login-form-shell">
+          <div className="login-mobile-brand">
+            <span className="login-logo-frame">
+              <img src={logo} alt="JUSHI" className="login-logo" />
+            </span>
+            <span>HR Management System</span>
+          </div>
+          <div className="login-card">
+            <div className="login-form-heading">
+              <p className="eyebrow">HR MANAGEMENT SYSTEM</p>
+              <h1>Welcome back</h1>
+              <p className="muted">Sign in to access your HR workspace.</p>
+            </div>
+            <form onSubmit={submit} noValidate>
+              <label>
+                Email
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  autoComplete="email"
+                  aria-invalid={!!error}
+                  placeholder="you@company.com"
+                />
+              </label>
+              <label>
+                Password
+                <span className="password-wrap">
+                  <input
+                    type={show ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    autoComplete="current-password"
+                    placeholder="Enter your password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShow(!show)}
+                    aria-label={show ? "Hide password" : "Show password"}
+                  >
+                    {show ? "Hide" : "Show"}
+                  </button>
+                </span>
+              </label>
+              {error && (
+                <p className="form-error" role="alert">
+                  {error}
+                </p>
+              )}
+              <button className="primary wide" disabled={busy}>
+                {busy ? "Signing in…" : "Sign In"}
+              </button>
+            </form>
+          </div>
+          <p className="login-mobile-signature">Designed by Moaz Shiref</p>
+        </div>
+      </section>
     </main>
   );
 }
