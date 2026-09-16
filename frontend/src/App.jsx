@@ -350,7 +350,7 @@ function Sidebar({ session, page, setPage, logout, isOpen, onOpen, close }) {
             <p className="nav-label">Workspace</p>
             <button className={`nav-item ${page === "dashboard" ? "selected" : ""}`} onClick={() => { setPage("dashboard"); close(); }}>
               <LayoutDashboard size={17} />
-              <span>Dashboard</span>
+              <span>Workforce Analytics</span>
             </button>
             <button
               className={`nav-item ${page.startsWith("employees") ? "selected" : ""}`}
@@ -1255,7 +1255,7 @@ function AppShell({ session, onLogout }) {
   }, []);
   const go = (id) => (location.hash = id);
   const moduleContext = page === "dashboard"
-    ? ["Workforce intelligence", "Dashboard"]
+    ? ["Workforce intelligence", "Workforce Analytics"]
     : page.startsWith("employees")
       ? ["People operations", "Employees"]
       : ["Organization settings", "SetUp"];
