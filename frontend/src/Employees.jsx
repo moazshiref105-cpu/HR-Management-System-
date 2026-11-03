@@ -426,14 +426,11 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
     <section className="section-view employees-view">
       <div className="section-head">
         <div>
-          <nav className="breadcrumb">
-            <span>People</span>
-            <ChevronRight size={13} />
-            <strong>Employees</strong>
-          </nav>
           <h1>
             Employees{" "}
-            <small className="page-count">{pagination?.total ?? "—"}</small>
+            <small className="page-count" aria-label={`${pagination?.total ?? "Unknown"} employees`}>
+              {pagination?.total ?? "—"}
+            </small>
           </h1>
           <p>Manage employee records and employment information.</p>
         </div>
@@ -1435,7 +1432,6 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
             <ArrowLeft size={15} />
             All employees
           </button>
-          <div className="employee-context-cover" aria-hidden="true" />
           <div className="employee-context-identity">
             <span className="employee-monogram">{employee.employee_number}</span>
             <p className="eyebrow">EMPLOYEE PROFILE</p>
@@ -1468,9 +1464,8 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
         <div className="employee-profile-main">
           <header className="employee-profile-header">
             <div>
-              <p className="eyebrow">{activeGroup.label}</p>
-              <h2>{tabLabel(tab)}</h2>
-              <p>Employee information is organized by the current profile section.</p>
+              <h2>Employee details</h2>
+              <p>Review information and manage employee records by section.</p>
             </div>
             <div className="profile-actions">
             {capabilities.includes("employees.edit") && (

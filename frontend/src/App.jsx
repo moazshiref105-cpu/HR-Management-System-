@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowLeft,
   BadgeDollarSign,
   Building2,
   BriefcaseBusiness,
@@ -22,7 +21,7 @@ import {
   UsersRound,
 } from "lucide-react";
 import logo from "../assets/images/jushi-logo.png";
-import { authConfigured, supabase } from "./auth";
+import { authConfigured, LOCAL_DEV_ACCESS_TOKEN, localDevAuthBypass, supabase } from "./auth";
 import { capabilitiesApi, employeesApi, invalidateCapabilitiesCache, invalidateDashboardData, invalidateEmployeeLookupCache, setupApi } from "./api";
 import { EmployeeDetail, EmployeeForm, EmployeesList } from "./Employees";
 import { Dashboard } from "./Dashboard";
@@ -81,6 +80,12 @@ const dashboardFilterResources = new Set([
 ]);
 const labels = Object.fromEntries(groups.flatMap((g) => g.items));
 const titleCase = (s) => labels[s] || s;
+const singularTitle = (resource) => ({
+  "marital-statuses": "Marital Status",
+  "leaving-reasons": "Leaving Reason",
+  "license-types": "License Type",
+  "shift-types": "Shift Type",
+}[resource] || titleCase(resource).replace(/s$/, ""));
 const initials = (name = "") =>
   name
     .split(" ")
@@ -176,15 +181,6 @@ function LoadingRows() {
 function SetupBreadcrumb({ group, current }) {
   return (
     <div className="page-navigation">
-      <button
-        className="back-to-setup"
-        onClick={() => {
-          location.hash = "";
-        }}
-      >
-        <ArrowLeft size={15} />
-        Back to SetUp
-      </button>
       <nav className="breadcrumb internal-breadcrumb" aria-label="Breadcrumb">
         <button
           onClick={() => {
@@ -348,11 +344,12 @@ function Sidebar({ session, page, setPage, logout, isOpen, onOpen, close }) {
           </div>
           <nav>
             <p className="nav-label">Workspace</p>
-            <button className={`nav-item ${page === "dashboard" ? "selected" : ""}`} onClick={() => { setPage("dashboard"); close(); }}>
+            <button aria-current={page === "dashboard" ? "page" : undefined} className={`nav-item ${page === "dashboard" ? "selected" : ""}`} onClick={() => { setPage("dashboard"); close(); }}>
               <LayoutDashboard size={17} />
               <span>Workforce Analytics</span>
             </button>
             <button
+              aria-current={page.startsWith("employees") ? "page" : undefined}
               className={`nav-item ${page.startsWith("employees") ? "selected" : ""}`}
               onClick={() => {
                 setPage("employees");
@@ -364,6 +361,7 @@ function Sidebar({ session, page, setPage, logout, isOpen, onOpen, close }) {
             </button>
             <p className="nav-label nav-label-settings">Configuration</p>
             <button
+              aria-current={page !== "dashboard" && !page.startsWith("employees") ? "page" : undefined}
               className={`nav-item ${page !== "dashboard" && !page.startsWith("employees") ? "selected" : ""}`}
               onClick={() => {
                 setPage("home");
@@ -388,7 +386,6 @@ function Sidebar({ session, page, setPage, logout, isOpen, onOpen, close }) {
           <button className="logout" onClick={logout}>
             <LogOut size={15} /> Logout
           </button>
-          <p className="signature">By Moaz Shiref</p>
         </div>
       </aside>
       {isOpen && (
@@ -516,7 +513,7 @@ function MasterData({ resource, token, toast }) {
           <p>Manage the options HR teams use when creating and updating employee records.</p>
         </div>
         <button className="primary" onClick={() => setEditor({})}>
-          + Add {titleCase(resource).replace(/s$/, "")}
+          + Add {singularTitle(resource)}
         </button>
       </div>
       <div className="toolbar">
@@ -544,7 +541,7 @@ function MasterData({ resource, token, toast }) {
         <div className="empty">
           <h3>No {titleCase(resource).toLowerCase()} have been added yet.</h3>
           <button className="primary" onClick={() => setEditor({})}>
-            Add {titleCase(resource).replace(/s$/, "")}
+            Add {singularTitle(resource)}
           </button>
         </div>
       ) : (
@@ -633,7 +630,7 @@ function MasterEditor({ resource, record, onSave, onClose, busy }) {
   });
   return (
     <Drawer
-      title={`${record.id ? "Edit" : "Add"} ${titleCase(resource).replace(/s$/, "")}`}
+      title={`${record.id ? "Edit" : "Add"} ${singularTitle(resource)}`}
       onClose={onClose}
     >
       <form
@@ -681,9 +678,14 @@ function MasterEditor({ resource, record, onSave, onClose, busy }) {
             Participates in comprehensive health insurance
           </label>
         )}
-        <button className="primary wide" disabled={busy}>
-          {busy ? "Saving…" : "Save changes"}
-        </button>
+        <footer className="drawer-actions">
+          <button type="button" className="secondary" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button className="primary" disabled={busy}>
+            {busy ? "Saving…" : "Save changes"}
+          </button>
+        </footer>
       </form>
     </Drawer>
   );
@@ -953,12 +955,15 @@ function UserEditor({ user, roles, token, toast, onClose, done, onCapabilitiesCh
             <small>Use at least 12 characters.</small>
           </label>
         )}
-        <fieldset>
-          <legend>Assigned Roles</legend>
+        <section className="role-assignment" aria-labelledby="assigned-roles-title">
+          <div className="role-assignment-head">
+            <h3 id="assigned-roles-title">Assigned roles</h3>
+            <p>Roles determine the areas of HMS this user can access.</p>
+          </div>
           {roles
             .filter((r) => r.is_active)
             .map((r) => (
-              <label className="check" key={r.id}>
+              <label className="role-choice" key={r.id}>
                 <input
                   type="checkbox"
                   checked={form.role_ids.includes(r.id)}
@@ -971,13 +976,11 @@ function UserEditor({ user, roles, token, toast, onClose, done, onCapabilitiesCh
                     })
                   }
                 />
-                {r.name}
+                <span><strong>{r.name}</strong><small>Active access role</small></span>
               </label>
             ))}
-        </fieldset>
-        <button className="primary wide" disabled={busy}>
-          {busy ? "Saving…" : "Save changes"}
-        </button>
+        </section>
+        <footer className="drawer-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy}>{busy ? "Saving…" : "Save changes"}</button></footer>
       </form>
     </Drawer>
   );
@@ -1257,10 +1260,10 @@ function AppShell({ session, onLogout }) {
   }, []);
   const go = (id) => (location.hash = id);
   const moduleContext = page === "dashboard"
-    ? ["Workforce intelligence", "Workforce Analytics"]
+    ? ["Workspace", "Workforce intelligence"]
     : page.startsWith("employees")
-      ? ["People operations", "Employees"]
-      : ["Organization settings", "SetUp"];
+      ? ["Workspace", "People operations"]
+      : ["Workspace", "Organization settings"];
   const employeeParts = page.split("/");
   let content =
     page === "dashboard" ? (
@@ -1313,7 +1316,6 @@ function AppShell({ session, onLogout }) {
           </div>
         </header>
         {content}
-        <footer className="mobile-signature">By Moaz Shiref</footer>
       </main>
       <Toast toast={toast} clear={() => setToast(null)} />
     </div>
@@ -1329,8 +1331,17 @@ function EmployeeEditorLoader({ id, token, toast, go, capabilities }) {
 }
 
 export default function App() {
-  const [session, setSession] = useState(null);
+  const devSession = useMemo(() => ({
+    access_token: LOCAL_DEV_ACCESS_TOKEN,
+    user: {
+      id: null,
+      email: "local-dev@hms.test",
+      user_metadata: { full_name: "Local Development" },
+    },
+  }), []);
+  const [session, setSession] = useState(() => localDevAuthBypass ? devSession : null);
   useEffect(() => {
+    if (localDevAuthBypass) return undefined;
     if (!supabase) return;
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
     const {
@@ -1345,7 +1356,12 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
   return session ? (
-    <AppShell session={session} onLogout={() => { invalidateCapabilitiesCache(); invalidateEmployeeLookupCache(); supabase.auth.signOut(); }} />
+    <AppShell session={session} onLogout={() => {
+      if (localDevAuthBypass) return;
+      invalidateCapabilitiesCache();
+      invalidateEmployeeLookupCache();
+      supabase.auth.signOut();
+    }} />
   ) : (
     <Login onSession={setSession} />
   );

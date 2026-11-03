@@ -44,6 +44,9 @@ final class AuthenticatedActorResolver
     /** @return array<string,mixed> */
     public function resolve(): array
     {
+        if ($this->localDevelopmentBypassEnabled()) {
+            return $this->localDevelopmentActor();
+        }
         $header = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
         if (!preg_match('/^Bearer\s+([^\s]+)$/i', $header, $match)) {
             throw new HttpException('Authentication is required.', 401);
@@ -66,6 +69,35 @@ final class AuthenticatedActorResolver
             throw new HttpException('User account is inactive or not provisioned.', 403);
         }
         return $user;
+    }
+
+    /**
+     * Allows local visual QA without a password only for PHP's loopback-only
+     * development server. It is unreachable from any non-loopback address and
+     * never runs under a production PHP SAPI, so deployed environments retain
+     * JWT authentication.
+     *
+     * @return array<string,mixed>
+     */
+    private function localDevelopmentActor(): array
+    {
+        $users = $this->supabase->service(
+            'GET',
+            '/rest/v1/users?select=id,is_active,is_super_admin&is_active=is.true&is_super_admin=is.true&order=created_at.asc&limit=1',
+        );
+        $user = $users[0] ?? null;
+        if (!is_array($user)) {
+            throw new HttpException('Local development bypass requires an active Super Admin.', 503);
+        }
+        return $user;
+    }
+
+    private function localDevelopmentBypassEnabled(): bool
+    {
+        if (PHP_SAPI !== 'cli-server') {
+            return false;
+        }
+        return in_array($_SERVER['REMOTE_ADDR'] ?? '', ['127.0.0.1', '::1'], true);
     }
 
     private function verifiedSubject(string $token): string
