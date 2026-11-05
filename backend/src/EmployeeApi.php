@@ -10,6 +10,13 @@ use RuntimeException;
 /** Domain API for Employees. It deliberately owns validation and calculated HR rules. */
 final class EmployeeApi
 {
+    private const WORK_QUEUES = [
+        'medical_eligible', 'medical_not_yet_eligible', 'life_eligible',
+        'contracts_expiring', 'contracts_expired', 'identity_expiring', 'identity_expired',
+        'licenses_expiring', 'licenses_expired', 'missing_form_1', 'missing_form_6',
+        'missing_bank', 'in_probation', 'probation_due', 'due_soon', 'overdue',
+        'open_notifications', 'new_hires', 'resigned_employees',
+    ];
     private const REFERENCES = [
         'religion_id' => 'religions', 'marital_status_id' => 'marital_statuses', 'diploma_id' => 'diplomas',
         'governorate_id' => 'governorates', 'department_id' => 'departments', 'shift_type_id' => 'shift_types',
@@ -87,6 +94,7 @@ final class EmployeeApi
     private function list(array $query, array $actor): array
     {
         $this->allow($actor, 'employees.view');
+        if (($query['queue'] ?? '') !== '') return $this->workQueue($query, $actor);
         $page = $this->page($query['page'] ?? 1);
         $pageSize = $this->pageSize($query['page_size'] ?? 25);
         $sort = $this->sort($query['sort'] ?? 'employee_number');
@@ -114,6 +122,36 @@ final class EmployeeApi
         return ['data' => $result['data'], 'pagination' => ['page' => $page, 'page_size' => $pageSize, 'total' => $total, 'total_pages' => $totalPages, 'has_next' => $page < $totalPages, 'has_previous' => $page > 1]];
     }
 
+    /** Server-filtered and paginated employee queue using the canonical dashboard metric rules. */
+    private function workQueue(array $query, array $actor): array
+    {
+        $queue = (string) $query['queue'];
+        if (!in_array($queue, self::WORK_QUEUES, true)) throw new HttpException('Unsupported employee work queue.', 422);
+        if (in_array($queue, ['medical_eligible', 'medical_not_yet_eligible', 'life_eligible'], true)) $this->allow($actor, 'employees.insurance.view');
+        if ($queue === 'missing_bank') $this->allow($actor, 'employees.financial.view');
+        $page = $this->page($query['page'] ?? 1);
+        $pageSize = $this->pageSize($query['page_size'] ?? 25);
+        $sort = (string) ($query['sort'] ?? 'employee_number');
+        if (!in_array($sort, ['employee_number', 'full_name_ar', 'full_name_en', 'joining_date', 'employee_status', 'queue_date'], true)) throw new HttpException('Unsupported employee sort field.', 422);
+        $direction = $this->direction($query['direction'] ?? 'asc');
+        $filters = [];
+        foreach (['department' => 'department_id', 'team' => 'team_id', 'position' => 'position_id', 'project' => 'project_id', 'governorate' => 'governorate_id', 'status' => 'employee_status', 'employee_status' => 'employee_status'] as $input => $key) {
+            if (($query[$input] ?? '') !== '') $filters[$key] = (string) $query[$input];
+        }
+        foreach (['from', 'to', 'search'] as $key) if (($query[$key] ?? '') !== '') $filters[$key] = (string) $query[$key];
+        $result = $this->supabase->service('POST', '/rest/v1/rpc/employee_work_queue', [
+            'p_metric' => $queue, 'p_filters' => $filters, 'p_page' => $page,
+            'p_page_size' => $pageSize, 'p_sort' => $sort, 'p_direction' => $direction,
+        ]);
+        $result = is_array($result) ? $result : [];
+        $total = (int) ($result['total'] ?? 0);
+        $totalPages = (int) ($result['total_pages'] ?? 0);
+        return ['data' => is_array($result['rows'] ?? null) ? $result['rows'] : [], 'pagination' => [
+            'page' => (int) ($result['page'] ?? $page), 'page_size' => (int) ($result['page_size'] ?? $pageSize),
+            'total' => $total, 'total_pages' => $totalPages, 'has_next' => $page < $totalPages, 'has_previous' => $page > 1,
+        ]];
+    }
+
     private function page(mixed $value): int { if (!is_int($value) && !ctype_digit((string) $value)) throw new RuntimeException('page must be a positive integer.'); $page = (int) $value; if ($page < 1) throw new RuntimeException('page must be a positive integer.'); return $page; }
     private function pageSize(mixed $value): int { if (!is_int($value) && !ctype_digit((string) $value)) throw new RuntimeException('page_size must be 25, 50, or 100.'); $pageSize = (int) $value; if (!in_array($pageSize, [25, 50, 100], true)) throw new RuntimeException('page_size must be 25, 50, or 100.'); return $pageSize; }
     private function sort(mixed $value): string { $sort = (string) $value; $allowed = ['employee_number' => 'employee_number', 'full_name_ar' => 'arabic_full_name', 'full_name_en' => 'english_full_name', 'joining_date' => 'joining_date', 'employee_status' => 'employee_status']; if (!isset($allowed[$sort])) throw new RuntimeException('Unsupported employee sort field.'); return $allowed[$sort]; }
@@ -126,11 +164,60 @@ final class EmployeeApi
         if (array_key_exists('employee_number', $body)) throw new RuntimeException('Employee ID is generated by the system.');
         $this->guardSections($body, $actor, true);
         $record = $this->employeeRecord($body, true, $actor);
+        $family = $this->initialFamily($body, $actor);
+        if ($family['wives'] !== [] || $family['children'] !== []) {
+            $created = $this->supabase->service('POST', '/rest/v1/rpc/create_employee_with_family', [
+                'p_employee' => $record,
+                'p_wives' => $family['wives'],
+                'p_children' => $family['children'],
+                'p_actor_id' => $actor['id'],
+            ]);
+            $row = is_array($created) ? ($created['employee'] ?? null) : null;
+            if (!is_array($row) || !isset($row['id'])) throw new RuntimeException('Employee creation did not return a record.');
+            $this->refreshNotificationsSafely((string) $row['id']);
+            return $this->mutationResult($row);
+        }
         $created = $this->supabase->service('POST', '/rest/v1/employees', [$record], ['Prefer: return=representation']);
         $row = $created[0] ?? null;
         if (!is_array($row) || !isset($row['id'])) throw new RuntimeException('Employee creation did not return a record.');
         $this->refreshNotificationsSafely((string) $row['id']);
         return $this->mutationResult($row);
+    }
+
+    /** Validate the draft-only family payload before it reaches the atomic database function.
+     * @param array<string,mixed> $body @param array<string,mixed> $actor
+     * @return array{wives:list<array<string,mixed>>,children:list<array<string,mixed>>}
+     */
+    private function initialFamily(array $body, array $actor): array
+    {
+        $family = $body['family'] ?? [];
+        if ($family === null) $family = [];
+        if (!is_array($family)) throw new RuntimeException('family must be an object.');
+        $wives = $family['wives'] ?? [];
+        $children = $family['children'] ?? [];
+        if (!is_array($wives) || !is_array($children)) throw new RuntimeException('Family wives and children must be lists.');
+        if ($wives !== [] || $children !== []) $this->allow($actor, 'employees.personal.edit');
+        $wifeIds = [];
+        $cleanWives = [];
+        foreach ($wives as $wife) {
+            if (!is_array($wife)) throw new RuntimeException('Each wife must be an object.');
+            $clientId = trim((string) ($wife['client_id'] ?? ''));
+            if ($clientId === '' || isset($wifeIds[$clientId])) throw new RuntimeException('Every wife needs a unique draft ID.');
+            $wifeIds[$clientId] = true;
+            $record = $this->nestedRecord('wives', $wife, $actor, true);
+            $record['client_id'] = $clientId;
+            $cleanWives[] = $record;
+        }
+        $cleanChildren = [];
+        foreach ($children as $child) {
+            if (!is_array($child)) throw new RuntimeException('Each child must be an object.');
+            $record = $this->nestedRecord('children', $child, $actor, true);
+            $wifeClientId = trim((string) ($child['wife_client_id'] ?? ''));
+            if ($wifeClientId !== '' && !isset($wifeIds[$wifeClientId])) throw new RuntimeException('Each child must reference a wife in this employee draft.');
+            $record['wife_client_id'] = $wifeClientId === '' ? null : $wifeClientId;
+            $cleanChildren[] = $record;
+        }
+        return ['wives' => $cleanWives, 'children' => $cleanChildren];
     }
 
     /** @param array<string,mixed> $body @param array<string,mixed> $actor */
@@ -156,12 +243,18 @@ final class EmployeeApi
         $this->allow($actor, 'employees.edit');
         $status = (string) ($body['employee_status'] ?? '');
         if (!in_array($status, ['active', 'resigned', 'inactive'], true)) throw new RuntimeException('employee_status must be active, resigned, or inactive.');
+        $current = $this->supabase->service('GET', '/rest/v1/employees?select=id,joining_date&id=eq.' . rawurlencode($id) . '&limit=1');
+        if (!isset($current[0]) || !is_array($current[0])) throw new HttpException('Employee not found.', 404);
         if ($status !== 'active') {
             $this->allow($actor, 'employees.delete');
             if (!$this->date($body['leaving_date'] ?? null) || !$this->positiveId($body['leaving_reason_id'] ?? null)) throw new RuntimeException('Leaving date and leaving reason are required for resigned or inactive employees.');
+            if ((string) $body['leaving_date'] < (string) $current[0]['joining_date']) throw new RuntimeException('Leaving date cannot be before joining date.');
             $this->assertActiveReference('leaving_reasons', (int) $body['leaving_reason_id']);
         }
         $record = array_intersect_key($body, array_flip(self::LEAVING));
+        if ($status === 'active') {
+            foreach (array_diff(self::LEAVING, ['employee_status']) as $field) $record[$field] = null;
+        }
         $record['employee_status'] = $status; $record['updated_by'] = $actor['id'];
         $expectedUpdatedAt = $this->expectedUpdatedAt($body['expected_updated_at'] ?? null);
         $updated = $this->supabase->service('PATCH', $this->employeeVersionPath($id, $expectedUpdatedAt), $record, ['Prefer: return=representation']);
@@ -206,6 +299,10 @@ final class EmployeeApi
     {
         $this->allow($actor, 'employees.work.edit');
         if (!$this->date($body['renewal_signing_date'] ?? null)) throw new RuntimeException('A valid renewal_signing_date is required.');
+        $employee = $this->supabase->service('GET', '/rest/v1/employees?select=id,employee_status,contract_signing_date&id=eq.' . rawurlencode($id) . '&limit=1');
+        if (!isset($employee[0]) || !is_array($employee[0])) throw new HttpException('Employee not found.', 404);
+        if (($employee[0]['employee_status'] ?? null) !== 'active') throw new RuntimeException('Only active employees can renew a contract.');
+        if ((string) $body['renewal_signing_date'] <= (string) $employee[0]['contract_signing_date']) throw new RuntimeException('Renewal signing date must be after the current contract signing date.');
         if ($this->renewalExists($id, (string) $body['renewal_signing_date'])) throw new RuntimeException('Contract renewal already exists for this date.');
         try {
             $result = $this->supabase->service('POST', '/rest/v1/rpc/renew_employee_contract', ['p_employee_id' => $id, 'p_renewal_signing_date' => $body['renewal_signing_date'], 'p_actor_id' => $actor['id']]);

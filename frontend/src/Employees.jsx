@@ -20,6 +20,7 @@ import {
   subscribeEmployeeLookupInvalidation,
 } from "./api";
 import { supabase } from "./auth";
+import { workQueue } from "./workQueues";
 
 const resources = [
   "religions",
@@ -65,6 +66,11 @@ const emptyForm = {
   bank_id: "",
   bank_account_number: "",
 };
+const draftId = () =>
+  typeof crypto?.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const emptyFamily = () => ({ wives: [], children: [] });
 const labels = {
   personal: "Personal",
   family: "Family",
@@ -81,6 +87,36 @@ const date = (value) =>
         new Date(`${value}T00:00:00`),
       )
     : "—";
+const daysFromToday = (value) => {
+  if (!value) return "—";
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const target = new Date(`${value}T00:00:00`);
+  const days = Math.ceil((target - today) / 86400000);
+  return days < 0 ? `${Math.abs(days)} days overdue` : days === 0 ? "Due today" : `${days} days remaining`;
+};
+const employeeListHash = () => {
+  const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  return {
+    search: params.get("search") || "", status: params.get("status") || "", department: params.get("department") || "", team: params.get("team") || "", position: params.get("position") || "", project: params.get("project") || "", governorate: params.get("governorate") || "", queue: params.get("queue") || "", from: params.get("from") || "", to: params.get("to") || "",
+    page: Number(params.get("page") || 1), pageSize: Number(params.get("page_size") || 25), sort: params.get("sort") || "employee_number", direction: params.get("direction") || "asc",
+  };
+};
+const safeDirectoryReturn = (employeeId = "") => {
+  const value = new URLSearchParams(location.hash.split("?")[1] || "").get("return_to");
+  if (value && /^employees(?:\?|$)/.test(value)) return value;
+  try {
+    const remembered = employeeId ? sessionStorage.getItem(`hms:employee-return:${employeeId}`) : null;
+    if (remembered && /^employees(?:\?|$)/.test(remembered)) return remembered;
+  } catch {
+    // Storage is only a resilience fallback; a direct profile link still works.
+  }
+  return "employees";
+};
+const withDirectoryReturn = (employeeId, route) => {
+  const directory = location.hash.slice(1);
+  try { sessionStorage.setItem(`hms:employee-return:${employeeId}`, directory); } catch {}
+  return `${route}?return_to=${encodeURIComponent(directory)}`;
+};
 const option = (items, id) =>
   items?.find((item) => String(item.id) === String(id));
 const clean = (form, includeFinancial = true) =>
@@ -295,26 +331,32 @@ function useLookups(token, enabled = true) {
 export function EmployeesList({ token, go, toast, capabilities = [] }) {
   const [records, setRecords] = useState(null);
   const lookup = useLookups(token, !!records);
-  const [filters, setFilters] = useState({
-    search: "",
-    status: "",
-    department: "",
-    team: "",
-    position: "",
-    project: "",
-    governorate: "",
-    page: 1,
-    pageSize: 25,
-    sort: "employee_number",
-    direction: "asc",
-  });
+  const [filters, setFilters] = useState(employeeListHash);
   const [pagination, setPagination] = useState(null);
   const [error, setError] = useState("");
+  const [requestKey, setRequestKey] = useState(0);
   const [loading, setLoading] = useState(true);
   const [showMoreFilters, setShowMoreFilters] = useState(false);
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+  // Initialise from the hash so a shared URL never briefly requests the full
+  // directory before its server-side search condition is applied.
+  const [debouncedSearch, setDebouncedSearch] = useState(() => employeeListHash().search);
   const requestId = useRef(0);
   const requestController = useRef(null);
+  const queue = workQueue(filters.queue);
+  useEffect(() => {
+    const sync = () => setFilters(employeeListHash());
+    addEventListener("hashchange", sync); addEventListener("popstate", sync);
+    return () => { removeEventListener("hashchange", sync); removeEventListener("popstate", sync); };
+  }, []);
+  useEffect(() => {
+    const params = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => {
+      const queryKey = key === "pageSize" ? "page_size" : key;
+      if (value !== "" && value != null && !(key === "page" && Number(value) === 1) && !(key === "pageSize" && Number(value) === 25) && !(key === "sort" && value === "employee_number") && !(key === "direction" && value === "asc")) params.set(queryKey, String(value));
+    });
+    const next = `#employees${params.toString() ? `?${params}` : ""}`;
+    if (location.hash !== next) history.replaceState(null, "", next);
+  }, [JSON.stringify(filters)]);
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(filters.search), 320);
     return () => clearTimeout(timer);
@@ -355,10 +397,14 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
     filters.position,
     filters.project,
     filters.governorate,
+    filters.queue,
+    filters.from,
+    filters.to,
     filters.page,
     filters.pageSize,
     filters.sort,
     filters.direction,
+    requestKey,
   ]);
   const update = (key, value) =>
     setFilters((current) => ({ ...current, [key]: value, page: 1 }));
@@ -386,9 +432,17 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
         ))}
     </select>
   );
+  const filterLabel = (key, value) => {
+    if (key === "status") return `Status: ${value}`;
+    if (key === "from") return `From: ${date(value)}`;
+    if (key === "to") return `To: ${date(value)}`;
+    const item = lookup?.[lookupKey[key]]?.find((entry) => String(entry.id) === String(value));
+    const titles = { department: "Department", team: "Team", position: "Position", project: "Project", governorate: "Governorate" };
+    return `${titles[key] || key.replace(/_/g, " ")}: ${item?.name || value}`;
+  };
   const activeFilters = Object.entries(filters).filter(
     ([key, value]) =>
-      !["search", "page", "pageSize", "sort", "direction"].includes(key) &&
+      !["search", "page", "pageSize", "sort", "direction", "queue"].includes(key) &&
       value,
   );
   const total = pagination?.total ?? 0;
@@ -416,23 +470,28 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
       team: "",
       position: "",
       project: "",
-      governorate: "",
+      governorate: "", queue: "", from: "", to: "",
       page: 1,
       pageSize: filters.pageSize,
       sort: "employee_number",
       direction: "asc",
     });
+  const clearQueue = () => {
+    location.hash = "employees";
+  };
+  const queueColumns = queue?.columns || [];
+  const queueDateLabel = queue?.dateLabel || "Relevant date";
   return (
     <section className="section-view employees-view">
       <div className="section-head">
         <div>
           <h1>
-            Employees{" "}
+            {queue?.title || "Employees"}{" "}
             <small className="page-count" aria-label={`${pagination?.total ?? "Unknown"} employees`}>
               {pagination?.total ?? "—"}
             </small>
           </h1>
-          <p>Manage employee records and employment information.</p>
+          <p>{queue?.subtitle || "Manage employee records and employment information."}</p>
         </div>
         {capabilities.includes("employees.create") && (
           <button className="primary" onClick={() => go("employees/new")}>
@@ -440,11 +499,12 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
           </button>
         )}
       </div>
+      {queue && <div className="work-queue-context"><span>HR Work Queue</span><strong>{queue.title}</strong><button className="text-button" onClick={clearQueue}>Back to all employees</button></div>}
       <div className="employee-summary">
         <article>
-          <span>Matching employees</span>
+          <span>{queue ? "Employees in this queue" : "Matching employees"}</span>
           <strong>{pagination?.total ?? "—"}</strong>
-          <small>Across the current server filters</small>
+          <small>{queue ? "Server-filtered work queue" : "Across the current server filters"}</small>
         </article>
         <article>
           <span>Visible on this page</span>
@@ -508,6 +568,8 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
             {select("position", "Positions")}
             {select("project", "Projects")}
             {select("governorate", "Governorates")}
+            {queue && <label className="toolbar-field">From<input type="date" value={filters.from} onChange={(event) => update("from", event.target.value)} /></label>}
+            {queue && <label className="toolbar-field">To<input type="date" value={filters.to} onChange={(event) => update("to", event.target.value)} /></label>}
           </div>
         )}
       </div>
@@ -515,7 +577,7 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
         <div className="filter-chips">
           {activeFilters.map(([key, value]) => (
             <button key={key} onClick={() => update(key, "")}>
-              {key.replace("_", " ")}: {value} ×
+              {filterLabel(key, value)} ×
             </button>
           ))}
           <button className="clear-chip" onClick={resetFilters}>
@@ -523,14 +585,14 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
           </button>
         </div>
       )}
-      {error && <Notice kind="danger">{error}</Notice>}
+      {error && <Notice kind="danger">{error}<span className="notice-actions"><button className="secondary" onClick={() => setRequestKey((value) => value + 1)}>Try again</button></span></Notice>}
       {!records ? (
         <div className="loading-list">
           {[1, 2, 3, 4].map((x) => (
             <div className="skeleton" key={x} />
           ))}
         </div>
-      ) : records.length === 0 ? (
+      ) : error ? null : records.length === 0 ? (
         <div className="empty">
           <h3>No employees found</h3>
           <p>Try changing or clearing your filters.</p>
@@ -560,7 +622,8 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
                     "Department",
                     "Position",
                     "Status",
-                    "Joining Date",
+                    queueColumns.includes("queueDate") ? queueDateLabel : "Joining Date",
+                    ...(queueColumns.includes("days") ? ["Timing"] : []),
                     "",
                   ].map((x) => (
                     <th key={x}>{x}</th>
@@ -569,15 +632,7 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
               </thead>
               <tbody>
                 {records.map((x) => (
-                  <tr
-                    key={x.id}
-                    tabIndex="0"
-                    onClick={() => go(`employees/${x.id}`)}
-                    onKeyDown={(e) =>
-                      (e.key === "Enter" || e.key === " ") &&
-                      go(`employees/${x.id}`)
-                    }
-                  >
+                  <tr key={x.id}>
                     <td>
                       <strong>#{x.employee_number}</strong>
                     </td>
@@ -595,13 +650,15 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
                     <td>
                       <Badge status={x.employee_status} />
                     </td>
-                    <td>{date(x.joining_date)}</td>
+                    <td>{queueColumns.includes("queueDate") ? date(x.queue_date) : date(x.joining_date)}{queueColumns.includes("item") && <small>{x.queue_item || "—"}</small>}</td>
+                    {queueColumns.includes("days") && <td><small className={x.queue_date && new Date(`${x.queue_date}T00:00:00`) < new Date() ? "deadline-overdue" : "deadline-upcoming"}>{daysFromToday(x.queue_date)}</small></td>}
                     <td>
                       <button
                         className="text-button"
+                        aria-label={`View ${x.english_full_name || x.arabic_full_name}`}
                         onClick={(e) => {
                           e.stopPropagation();
-                          go(`employees/${x.id}`);
+                          go(withDirectoryReturn(x.id, `employees/${x.id}`));
                         }}
                       >
                         View
@@ -701,6 +758,14 @@ export function EmployeeForm({
     source ? employeeFormValues(source) : emptyForm,
   );
   const [version, setVersion] = useState(() => source?.updated_at || null);
+  const [family, setFamily] = useState(() =>
+    source
+      ? {
+          wives: source.family?.wives || [],
+          children: source.family?.children || [],
+        }
+      : emptyFamily(),
+  );
   const [occConflict, setOccConflict] = useState(false);
   const [stale, setStale] = useState(false);
   const steps = [
@@ -733,11 +798,26 @@ export function EmployeeForm({
       setBusy(false);
     }
   }, [source, token, toast]);
-  const dirty = !sameForm(form, baseline);
+  const dirty =
+    !sameForm(form, baseline) ||
+    (!source && (family.wives.length > 0 || family.children.length > 0));
   const dirtyRef = useRef(dirty);
   useEffect(() => {
     dirtyRef.current = dirty;
   }, [dirty]);
+  useEffect(() => {
+    if (!dirty) return undefined;
+    const warnBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    addEventListener("beforeunload", warnBeforeUnload);
+    return () => removeEventListener("beforeunload", warnBeforeUnload);
+  }, [dirty]);
+  const leaveForm = (target) => {
+    if (dirty && !window.confirm("You have unsaved employee changes. Leave without saving?")) return;
+    go(target);
+  };
   useEmployeeInvalidation(
     source?.id,
     token,
@@ -749,7 +829,49 @@ export function EmployeeForm({
       await refreshLatest();
     }, [refreshLatest]),
   );
+  const validateStep = (index) => {
+    if (index === 0) {
+      if (!form.arabic_full_name.trim() || !form.english_full_name.trim()) {
+        toast("Arabic and English full names are required.", "error");
+        return false;
+      }
+      if (!/^\d{14}$/.test(form.identity_card_number)) {
+        toast("Identity card number must be exactly 14 digits.", "error");
+        return false;
+      }
+      if (!/^\d{11}$/.test(form.phone)) {
+        toast("Phone must be exactly 11 digits.", "error");
+        return false;
+      }
+    }
+    if (index === 1 && !source) {
+      for (const wife of family.wives) {
+        if (!wife.wife_name.trim() || !/^\d{14}$/.test(wife.identity_card_number)) {
+          toast("Each spouse needs a name and a 14-digit identity card number.", "error");
+          return false;
+        }
+      }
+      for (const child of family.children) {
+        if (!child.child_name.trim() || !/^\d{14}$/.test(child.identity_card_number)) {
+          toast("Each child needs a name and a 14-digit identity card number.", "error");
+          return false;
+        }
+      }
+    }
+    if (index === 2) {
+      if (!form.department_id || !form.shift_type_id || !form.position_id || !form.joining_date || !form.contract_signing_date) {
+        toast("Complete all required work information before continuing.", "error");
+        return false;
+      }
+      if (form.contract_signing_date < form.joining_date) {
+        toast("Contract signing date cannot be before joining date.", "error");
+        return false;
+      }
+    }
+    return true;
+  };
   const save = async () => {
+    for (const index of [0, 1, 2]) if (!validateStep(index)) return setStep(index);
     if (!/^\d{14}$/.test(form.identity_card_number))
       return toast("Identity card number must be exactly 14 digits.", "error");
     if (!/^\d{11}$/.test(form.phone))
@@ -763,7 +885,7 @@ export function EmployeeForm({
             { ...body, expected_updated_at: version },
             token,
           )
-        : await employeesApi.createEmployee(body, token);
+        : await employeesApi.createEmployee({ ...body, family }, token);
       invalidateDashboardData();
       if (source) {
         setVersion(result.updated_at);
@@ -773,7 +895,7 @@ export function EmployeeForm({
         toast("Employee updated.", "success");
       } else {
         toast("Employee created.", "success");
-        go(`employees/${result.id}`);
+        go(`employees/${result.id}?return_to=${encodeURIComponent(safeDirectoryReturn())}`);
       }
     } catch (e) {
       if (source && e.status === 409 && e.code === "employee_conflict")
@@ -805,7 +927,7 @@ export function EmployeeForm({
         <div>
           <button
             className="back-to-setup"
-            onClick={() => go(source ? `employees/${source.id}` : "employees")}
+            onClick={() => leaveForm(source ? `employees/${source.id}${location.hash.includes("?") ? location.hash.slice(location.hash.indexOf("?")) : ""}` : safeDirectoryReturn())}
           >
             <ArrowLeft size={15} />
             Back to Employees
@@ -859,7 +981,9 @@ export function EmployeeForm({
           <button
             key={x}
             className={i === step ? "current" : i < step ? "done" : ""}
-            onClick={() => setStep(i)}
+            onClick={() => {
+              if (i <= step || validateStep(step)) setStep(i);
+            }}
           >
             <span>{i + 1}</span>
             {x}
@@ -994,18 +1118,9 @@ export function EmployeeForm({
         {step === 1 && (
           <Section
             title="Family"
-            subtitle="Family details can be added after this employee is created."
+            subtitle={source ? "Manage existing family records from the employee profile." : "Add the family records that belong to this employee now. Everything is saved together."}
           >
-            {married ? (
-              <Notice>
-                Add wives and children from the Family section after saving this
-                profile.
-              </Notice>
-            ) : (
-              <Notice>
-                Family details can be added later if they become relevant.
-              </Notice>
-            )}
+            {source ? <Notice>Family records are managed from the employee profile so each change remains independently auditable.</Notice> : <DraftFamilyEditor family={family} setFamily={setFamily} married={married} />}
           </Section>
         )}
         {step === 2 && (
@@ -1157,6 +1272,9 @@ export function EmployeeForm({
           >
             <div className="review-grid">
               <Info label="Employee Number" value="Generated automatically" />
+              <Info label="Arabic Name" value={form.arabic_full_name} />
+              <Info label="English Name" value={form.english_full_name} />
+              <Info label="Department" value={option(lookup.departments, form.department_id)?.name} />
               <Info
                 label="Position"
                 value={
@@ -1166,6 +1284,8 @@ export function EmployeeForm({
                 }
               />
               <Info label="Joining Date" value={date(form.joining_date)} />
+              <Info label="Contract Signing" value={date(form.contract_signing_date)} />
+              <Info label="Family records" value={source ? "Managed on profile" : `${family.wives.length} spouse(s) · ${family.children.length} child(ren)`} />
               <Info
                 label="Insurance calculations"
                 value="Available after save"
@@ -1182,7 +1302,7 @@ export function EmployeeForm({
             Back
           </button>
           {step < steps.length - 1 ? (
-            <button className="primary" onClick={() => setStep(step + 1)}>
+            <button className="primary" onClick={() => validateStep(step) && setStep(step + 1)}>
               Continue <ChevronRight size={16} />
             </button>
           ) : (
@@ -1193,6 +1313,24 @@ export function EmployeeForm({
         </div>
       </div>
     </section>
+  );
+}
+
+function DraftFamilyEditor({ family, setFamily, married }) {
+  const update = (group, clientId, patch) => setFamily((current) => ({ ...current, [group]: current[group].map((record) => record.client_id === clientId ? { ...record, ...patch } : record) }));
+  const remove = (group, clientId) => setFamily((current) => ({
+    ...current,
+    [group]: current[group].filter((record) => record.client_id !== clientId),
+    children: group === "wives" ? current.children.map((child) => child.wife_client_id === clientId ? { ...child, wife_client_id: "" } : child) : current.children.filter((record) => record.client_id !== clientId),
+  }));
+  return (
+    <div className="draft-family-editor">
+      {!married && <Notice>Family records are optional. If marital status changes later, they can still be added from the profile.</Notice>}
+      <div className="draft-family-head"><div><h3>Spouses</h3><p>Add only records that are ready to be saved.</p></div><button type="button" className="secondary" onClick={() => setFamily((current) => ({ ...current, wives: [...current.wives, { client_id: draftId(), wife_name: "", identity_card_number: "", is_working: false }] }))}><Plus size={15} /> Add spouse</button></div>
+      {family.wives.length === 0 ? <p className="family-empty">No spouse records added.</p> : family.wives.map((wife, index) => <div className="draft-family-card" key={wife.client_id}><div className="draft-family-card-head"><strong>Spouse {index + 1}</strong><button type="button" className="text-button" onClick={() => remove("wives", wife.client_id)}>Remove</button></div><div className="field-grid"><label>Full name<input value={wife.wife_name} onChange={(event) => update("wives", wife.client_id, { wife_name: event.target.value })} /></label><label>Identity card number<input inputMode="numeric" value={wife.identity_card_number} onChange={(event) => update("wives", wife.client_id, { identity_card_number: event.target.value })} /></label><label className="check"><input type="checkbox" checked={!!wife.is_working} onChange={(event) => update("wives", wife.client_id, { is_working: event.target.checked })} /> Is working</label></div></div>)}
+      <div className="draft-family-head"><div><h3>Children</h3><p>Link a child to a spouse when applicable.</p></div><button type="button" className="secondary" onClick={() => setFamily((current) => ({ ...current, children: [...current.children, { client_id: draftId(), child_name: "", identity_card_number: "", wife_client_id: "" }] }))}><Plus size={15} /> Add child</button></div>
+      {family.children.length === 0 ? <p className="family-empty">No child records added.</p> : family.children.map((child, index) => <div className="draft-family-card" key={child.client_id}><div className="draft-family-card-head"><strong>Child {index + 1}</strong><button type="button" className="text-button" onClick={() => remove("children", child.client_id)}>Remove</button></div><div className="field-grid"><label>Full name<input value={child.child_name} onChange={(event) => update("children", child.client_id, { child_name: event.target.value })} /></label><label>Identity card number<input inputMode="numeric" value={child.identity_card_number} onChange={(event) => update("children", child.client_id, { identity_card_number: event.target.value })} /></label><label>Related spouse<select value={child.wife_client_id || ""} onChange={(event) => update("children", child.client_id, { wife_client_id: event.target.value })}><option value="">Not specified</option>{family.wives.map((wife, wifeIndex) => <option key={wife.client_id} value={wife.client_id}>{wife.wife_name || `Spouse ${wifeIndex + 1}`}</option>)}</select></label></div></div>)}
+    </div>
   );
 }
 
@@ -1318,11 +1456,15 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
   const [employee, setEmployee] = useState(null);
   const requestId = useRef(0);
   const lookup = useLookups(token, !!employee);
-  const [tab, setTab] = useState("overview");
+  const profileSection = () =>
+    new URLSearchParams(location.hash.split("?")[1] || "").get("section") ||
+    "overview";
+  const [tab, setTab] = useState(profileSection);
   const [editor, setEditor] = useState(null);
   const [renew, setRenew] = useState(false);
   const [resign, setResign] = useState(false);
   const [busy, setBusy] = useState(false);
+  const directoryReturn = safeDirectoryReturn(id);
   const load = useCallback(
     (clear = true) => {
       const currentRequest = ++requestId.current;
@@ -1345,6 +1487,11 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
       requestId.current += 1;
     };
   }, [load]);
+  useEffect(() => {
+    const syncSection = () => setTab(profileSection());
+    addEventListener("hashchange", syncSection);
+    return () => removeEventListener("hashchange", syncSection);
+  }, []);
   useEmployeeInvalidation(
     id,
     token,
@@ -1424,11 +1571,18 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
   ].filter((group) => group.items.length);
   const activeGroup = profileGroups.find((group) => group.items.includes(tab)) || profileGroups[0];
   const tabLabel = (item) => (item === "overview" ? "Overview" : labels[item]);
+  const selectTab = (next) => {
+    const params = new URLSearchParams(location.hash.split("?")[1] || "");
+    if (next === "overview") params.delete("section");
+    else params.set("section", next);
+    const suffix = params.toString();
+    location.hash = `employees/${id}${suffix ? `?${suffix}` : ""}`;
+  };
   return (
     <section className="section-view employees-view employee-profile-view">
       <div className="employee-profile-layout">
         <aside className="employee-context-panel">
-          <button className="back-to-setup" onClick={() => go("employees")}>
+          <button className="back-to-setup" onClick={() => go(directoryReturn)}>
             <ArrowLeft size={15} />
             All employees
           </button>
@@ -1453,7 +1607,7 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
               <button
                 key={group.label}
                 className={activeGroup.label === group.label ? "selected" : ""}
-                onClick={() => setTab(group.items[0])}
+                onClick={() => selectTab(group.items[0])}
               >
                 <span>{group.label}</span>
                 <small>{group.items.length > 1 ? `${group.items.length} sections` : "View section"}</small>
@@ -1471,13 +1625,13 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
             {capabilities.includes("employees.edit") && (
               <button
                 className="primary"
-                onClick={() => go(`employees/${id}/edit`)}
+                onClick={() => go(`employees/${id}/edit?return_to=${encodeURIComponent(directoryReturn)}`)}
               >
                 <Pencil size={15} />
                 Edit Employee
               </button>
             )}
-            {employee.work && capabilities.includes("employees.work.edit") && (
+            {employee.employee_status === "active" && employee.work && capabilities.includes("employees.work.edit") && (
               <button className="secondary" onClick={() => setRenew(true)}>
                 <RefreshCw size={15} />
                 Renew Contract
@@ -1497,7 +1651,7 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
           {activeGroup.items.length > 1 && (
             <nav className="profile-tabs employee-secondary-tabs" aria-label={`${activeGroup.label} sections`}>
               {activeGroup.items.map((item) => (
-                <button key={item} className={tab === item ? "selected" : ""} onClick={() => setTab(item)}>
+                <button key={item} className={tab === item ? "selected" : ""} onClick={() => selectTab(item)}>
                   {tabLabel(item)}
                 </button>
               ))}

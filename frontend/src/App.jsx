@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BadgeDollarSign,
+  Bell,
   Building2,
   BriefcaseBusiness,
   ChevronRight,
@@ -22,8 +23,9 @@ import {
 } from "lucide-react";
 import logo from "../assets/images/jushi-logo.png";
 import { authConfigured, LOCAL_DEV_ACCESS_TOKEN, localDevAuthBypass, supabase } from "./auth";
-import { capabilitiesApi, employeesApi, invalidateCapabilitiesCache, invalidateDashboardData, invalidateEmployeeLookupCache, setupApi } from "./api";
+import { capabilitiesApi, dashboardApi, employeesApi, invalidateCapabilitiesCache, invalidateDashboardData, invalidateEmployeeLookupCache, setupApi } from "./api";
 import { EmployeeDetail, EmployeeForm, EmployeesList } from "./Employees";
+import { workQueueHash } from "./workQueues";
 import { Dashboard } from "./Dashboard";
 
 const groups = [
@@ -177,6 +179,50 @@ function LoadingRows() {
       ))}
     </div>
   );
+}
+
+const notificationMetricLabels = {
+  medical_eligible: "Medical eligibility reached", life_eligible: "Life eligibility reached",
+  contracts_expiring: "Contracts expiring", contracts_expired: "Contracts expired",
+  identity_expiring: "Identity documents expiring", identity_expired: "Identity documents expired",
+  licenses_expiring: "Licenses expiring", licenses_expired: "Licenses expired",
+  missing_form_1: "Missing Form 1", missing_form_6: "Missing Form 6",
+  due_soon: "Due soon", overdue: "Overdue",
+};
+const notificationMetricOrder = ["overdue", "contracts_expired", "identity_expired", "missing_form_1", "missing_form_6", "contracts_expiring", "identity_expiring", "licenses_expiring", "medical_eligible", "life_eligible", "due_soon"];
+
+function NotificationCenter({ token }) {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    dashboardApi.executive({ granularity: "auto" }, token)
+      .then((result) => {
+        if (!active) return;
+        setItems((result.attention || []).filter((item) => Number(item.count) > 0 && notificationMetricLabels[item.metric]).sort((a, b) => {
+          const aIndex = notificationMetricOrder.indexOf(a.metric), bIndex = notificationMetricOrder.indexOf(b.metric);
+          return (aIndex < 0 ? 999 : aIndex) - (bIndex < 0 ? 999 : bIndex);
+        }));
+      })
+      .catch(() => { if (active) setItems([]); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [token]);
+  const openNotification = (item) => {
+    location.hash = workQueueHash(item.metric);
+    setOpen(false);
+  };
+  return <div className="notification-center">
+    <button className="notification-trigger" aria-label={items.length ? `${items.length} workforce notifications` : "Notifications"} aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen((current) => !current)}>
+      <Bell size={18} />{items.length > 0 && <span className="notification-count">{items.length > 9 ? "9+" : items.length}</span>}
+    </button>
+    {open && <section className="notification-popover" role="dialog" aria-label="Workforce notifications">
+      <header><div><p>WORKFORCE ALERTS</p><h2>Notifications</h2></div><button onClick={() => setOpen(false)} aria-label="Close notifications">×</button></header>
+      {loading ? <p className="notification-empty">Checking workforce alerts…</p> : items.length ? <div className="notification-list">{items.map((item) => <button key={item.metric} className={`notification-item severity-${item.severity?.toLowerCase() || "info"}`} onClick={() => openNotification(item)}><span className="notification-indicator" aria-hidden="true"/><span><strong>{notificationMetricLabels[item.metric] || item.label}</strong><small>{item.count} employee{Number(item.count) === 1 ? "" : "s"} to review</small></span><b>{item.count}</b></button>)}</div> : <p className="notification-empty">No workforce alerts need attention right now.</p>}
+    </section>}
+  </div>;
 }
 function SetupBreadcrumb({ group, current }) {
   return (
@@ -1307,12 +1353,15 @@ function AppShell({ session, onLogout }) {
             <small>{moduleContext[0]}</small>
             <span>{moduleContext[1]}</span>
           </div>
-          <div className="topbar-user" aria-label="Current user">
-            <div>
-              <strong>{session.user.user_metadata?.full_name || session.user.email}</strong>
-              <small>Signed in</small>
+          <div className="topbar-actions">
+            <NotificationCenter token={session.access_token} />
+            <div className="topbar-user" aria-label="Current user">
+              <div>
+                <strong>{session.user.user_metadata?.full_name || session.user.email}</strong>
+                <small>Signed in</small>
+              </div>
+              <div className="top-avatar">{initials(session.user.email)}</div>
             </div>
-            <div className="top-avatar">{initials(session.user.email)}</div>
           </div>
         </header>
         {content}
