@@ -166,6 +166,16 @@ export const employeesApi = {
   refreshEmployeeNotifications: (id, t) => api(`/api/employees/${id}/notifications`, t, { method: 'POST' }),
 }
 
+export const documentsApi = {
+  types: (t) => dedupeInFlight(`GET:${t}:/api/documents/types`, () => api('/api/documents/types', t)),
+  list: (options, t) => {
+    const query = new URLSearchParams(Object.entries(options || {}).filter(([, value]) => value !== "" && value != null)).toString()
+    return api(`/api/documents${query ? `?${query}` : ""}`, t)
+  },
+  create: (body, t) => api('/api/documents', t, { method: 'POST', body: JSON.stringify(body) }),
+  update: (id, body, t) => api(`/api/documents/${id}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
+}
+
 export const dashboardApi = {
   metrics: (t) => dedupeInFlight(`GET:${t}:/api/dashboard/metrics`, () => api('/api/dashboard/metrics', t)),
   executive: (params, t) => api(`/api/dashboard/executive?${new URLSearchParams(params)}`, t),

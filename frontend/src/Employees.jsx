@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import {
   employeesApi,
+  documentsApi,
   setupApi,
   employeeLookupApi,
   invalidateDashboardData,
@@ -21,6 +22,13 @@ import {
 } from "./api";
 import { supabase } from "./auth";
 import { workQueue } from "./workQueues";
+import {
+  currentDirectoryContext,
+  editRouteFromProfile,
+  profileDirectoryContext,
+  profileRouteFromEditor,
+  profileRouteFromDirectory,
+} from "./employeeNavigation";
 
 const resources = [
   "religions",
@@ -78,6 +86,7 @@ const labels = {
   insurance: "Insurance",
   financial: "Financial",
   licenses: "Licenses",
+  documents: "Documents & Compliance",
   contracts: "Contract History",
   notifications: "Notifications",
 };
@@ -101,22 +110,7 @@ const employeeListHash = () => {
     page: Number(params.get("page") || 1), pageSize: Number(params.get("page_size") || 25), sort: params.get("sort") || "employee_number", direction: params.get("direction") || "asc",
   };
 };
-const safeDirectoryReturn = (employeeId = "") => {
-  const value = new URLSearchParams(location.hash.split("?")[1] || "").get("return_to");
-  if (value && /^employees(?:\?|$)/.test(value)) return value;
-  try {
-    const remembered = employeeId ? sessionStorage.getItem(`hms:employee-return:${employeeId}`) : null;
-    if (remembered && /^employees(?:\?|$)/.test(remembered)) return remembered;
-  } catch {
-    // Storage is only a resilience fallback; a direct profile link still works.
-  }
-  return "employees";
-};
-const withDirectoryReturn = (employeeId, route) => {
-  const directory = location.hash.slice(1);
-  try { sessionStorage.setItem(`hms:employee-return:${employeeId}`, directory); } catch {}
-  return `${route}?return_to=${encodeURIComponent(directory)}`;
-};
+const isEmployeeDirectoryHash = () => /^#employees(?:\?|$)/.test(location.hash);
 const option = (items, id) =>
   items?.find((item) => String(item.id) === String(id));
 const clean = (form, includeFinancial = true) =>
@@ -344,11 +338,17 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
   const requestController = useRef(null);
   const queue = workQueue(filters.queue);
   useEffect(() => {
-    const sync = () => setFilters(employeeListHash());
+    // A profile URL also carries a `return_to` directory context. Do not let
+    // this still-mounted list rewrite that profile route before AppShell swaps
+    // the view, otherwise a queue-to-profile transition loses its source.
+    const sync = () => {
+      if (isEmployeeDirectoryHash()) setFilters(employeeListHash());
+    };
     addEventListener("hashchange", sync); addEventListener("popstate", sync);
     return () => { removeEventListener("hashchange", sync); removeEventListener("popstate", sync); };
   }, []);
   useEffect(() => {
+    if (!isEmployeeDirectoryHash()) return;
     const params = new URLSearchParams();
     Object.entries(filters).forEach(([key, value]) => {
       const queryKey = key === "pageSize" ? "page_size" : key;
@@ -481,26 +481,47 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
   };
   const queueColumns = queue?.columns || [];
   const queueDateLabel = queue?.dateLabel || "Relevant date";
+  const queueScope = [filters.from && `From ${date(filters.from)}`, filters.to && `To ${date(filters.to)}`]
+    .filter(Boolean)
+    .join(" · ") || "Current queue rules";
   return (
     <section className="section-view employees-view">
-      <div className="section-head">
-        <div>
-          <h1>
-            {queue?.title || "Employees"}{" "}
-            <small className="page-count" aria-label={`${pagination?.total ?? "Unknown"} employees`}>
-              {pagination?.total ?? "—"}
-            </small>
-          </h1>
-          <p>{queue?.subtitle || "Manage employee records and employment information."}</p>
+      {queue ? (
+        <header className="work-queue-header">
+          <div className="work-queue-heading">
+            <span className="work-queue-kicker">People / Work Queues</span>
+            <h1>{queue.title}</h1>
+            <p>{queue.subtitle}</p>
+          </div>
+          <div className="work-queue-actions">
+            <button className="text-button queue-back" onClick={clearQueue}>
+              <ArrowLeft size={15} /> Back to all employees
+            </button>
+          </div>
+          <dl className="work-queue-scope" aria-label="Queue scope">
+            <div><dt>Affected employees</dt><dd>{pagination?.total ?? "—"}</dd></div>
+            <div><dt>Active scope</dt><dd>{queueScope}</dd></div>
+            <div><dt>Results shown</dt><dd>{records?.length ?? "—"} on this page</dd></div>
+          </dl>
+        </header>
+      ) : (
+        <div className="section-head">
+          <div>
+            <h1>
+              Employees{" "}
+              <small className="page-count" aria-label={`${pagination?.total ?? "Unknown"} employees`}>
+                {pagination?.total ?? "—"}
+              </small>
+            </h1>
+          </div>
+          {capabilities.includes("employees.create") && (
+            <button className="primary" onClick={() => go("employees/new")}>
+              <Plus size={17} /> Add Employee
+            </button>
+          )}
         </div>
-        {capabilities.includes("employees.create") && (
-          <button className="primary" onClick={() => go("employees/new")}>
-            <Plus size={17} /> Add Employee
-          </button>
-        )}
-      </div>
-      {queue && <div className="work-queue-context"><span>HR Work Queue</span><strong>{queue.title}</strong><button className="text-button" onClick={clearQueue}>Back to all employees</button></div>}
-      <div className="employee-summary">
+      )}
+      {!queue && <div className="employee-summary">
         <article>
           <span>{queue ? "Employees in this queue" : "Matching employees"}</span>
           <strong>{pagination?.total ?? "—"}</strong>
@@ -516,7 +537,7 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
           <strong>Automatic</strong>
           <small>Generated by HMS</small>
         </article>
-      </div>
+      </div>}
       <div className="employee-filters">
         <label className="search">
           ⌕{" "}
@@ -537,33 +558,26 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
           <option value="resigned">Resigned</option>
           <option value="inactive">Inactive</option>
         </select>
-        <select
-          aria-label="Sort employees"
-          value={filters.sort}
-          onChange={(e) => update("sort", e.target.value)}
-        >
-          <option value="employee_number">Employee number</option>
-          <option value="joining_date">Joining date</option>
-          <option value="full_name_ar">Arabic name</option>
-          <option value="full_name_en">English name</option>
-          <option value="employee_status">Status</option>
-        </select>
-        <select
-          aria-label="Sort direction"
-          value={filters.direction}
-          onChange={(e) => update("direction", e.target.value)}
-        >
-          <option value="asc">Ascending</option>
-          <option value="desc">Descending</option>
-        </select>
         <button
           className="secondary"
+          aria-expanded={showMoreFilters}
           onClick={() => setShowMoreFilters((value) => !value)}
         >
           {showMoreFilters ? "Hide" : "More"} Filters
         </button>
         {showMoreFilters && (
           <div className="employee-more-filters">
+            <select aria-label="Sort employees" value={filters.sort} onChange={(e) => update("sort", e.target.value)}>
+              <option value="employee_number">Employee number</option>
+              <option value="joining_date">Joining date</option>
+              <option value="full_name_ar">Arabic name</option>
+              <option value="full_name_en">English name</option>
+              <option value="employee_status">Status</option>
+            </select>
+            <select aria-label="Sort direction" value={filters.direction} onChange={(e) => update("direction", e.target.value)}>
+              <option value="asc">Ascending</option>
+              <option value="desc">Descending</option>
+            </select>
             {select("team", "Teams")}
             {select("position", "Positions")}
             {select("project", "Projects")}
@@ -617,12 +631,11 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
               <thead>
                 <tr>
                   {[
-                    "Employee ID",
-                    "Name",
+                    "Employee",
                     "Department",
                     "Position",
                     "Status",
-                    queueColumns.includes("queueDate") ? queueDateLabel : "Joining Date",
+                    queue ? queueDateLabel : "Joining Date",
                     ...(queueColumns.includes("days") ? ["Timing"] : []),
                     "",
                   ].map((x) => (
@@ -633,24 +646,19 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
               <tbody>
                 {records.map((x) => (
                   <tr key={x.id}>
-                    <td>
-                      <strong>#{x.employee_number}</strong>
-                    </td>
-                    <td>
+                    <td className="employee-identity">
                       <strong dir="rtl">{x.arabic_full_name}</strong>
-                      <small>{x.english_full_name}</small>
+                      <small>{x.english_full_name} · #{x.employee_number}</small>
                     </td>
-                    <td>{x.department?.name || "—"}</td>
-                    <td>
+                    <td className="employee-organization">{x.department?.name || "—"}</td>
+                    <td className="employee-position">
                       {x.position?.name || "—"}
-                      <small className="code">
-                        {x.position?.position_code}
-                      </small>
+                      {x.position?.position_code && <small className="code">{x.position.position_code}</small>}
                     </td>
                     <td>
                       <Badge status={x.employee_status} />
                     </td>
-                    <td>{queueColumns.includes("queueDate") ? date(x.queue_date) : date(x.joining_date)}{queueColumns.includes("item") && <small>{x.queue_item || "—"}</small>}</td>
+                    <td className="queue-relevant-date">{queue ? (x.queue_date ? date(x.queue_date) : "—") : date(x.joining_date)}{queueColumns.includes("item") && <small>{x.queue_item || "—"}</small>}</td>
                     {queueColumns.includes("days") && <td><small className={x.queue_date && new Date(`${x.queue_date}T00:00:00`) < new Date() ? "deadline-overdue" : "deadline-upcoming"}>{daysFromToday(x.queue_date)}</small></td>}
                     <td>
                       <button
@@ -658,7 +666,7 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
                         aria-label={`View ${x.english_full_name || x.arabic_full_name}`}
                         onClick={(e) => {
                           e.stopPropagation();
-                          go(withDirectoryReturn(x.id, `employees/${x.id}`));
+                          go(profileRouteFromDirectory(x.id, currentDirectoryContext()));
                         }}
                       >
                         View
@@ -895,7 +903,7 @@ export function EmployeeForm({
         toast("Employee updated.", "success");
       } else {
         toast("Employee created.", "success");
-        go(`employees/${result.id}?return_to=${encodeURIComponent(safeDirectoryReturn())}`);
+        go(profileRouteFromDirectory(result.id, currentDirectoryContext()));
       }
     } catch (e) {
       if (source && e.status === 409 && e.code === "employee_conflict")
@@ -927,17 +935,12 @@ export function EmployeeForm({
         <div>
           <button
             className="back-to-setup"
-            onClick={() => leaveForm(source ? `employees/${source.id}${location.hash.includes("?") ? location.hash.slice(location.hash.indexOf("?")) : ""}` : safeDirectoryReturn())}
+            onClick={() => leaveForm(source ? profileRouteFromEditor(source.id) : currentDirectoryContext())}
           >
             <ArrowLeft size={15} />
             Back to Employees
           </button>
           <h1>{source ? "Edit Employee" : "Add Employee"}</h1>
-          <p>
-            {source
-              ? "Update the employee record one clear step at a time."
-              : "Create a complete employee profile in a few manageable steps."}
-          </p>
         </div>
       </div>
       {stale && dirty && (
@@ -1294,13 +1297,22 @@ export function EmployeeForm({
           </Section>
         )}
         <div className="form-navigation">
-          <button
-            className="secondary"
-            disabled={step === 0}
-            onClick={() => setStep(step - 1)}
-          >
-            Back
-          </button>
+          <div className="form-navigation-start">
+            <button
+              className="secondary"
+              disabled={step === 0}
+              onClick={() => setStep(step - 1)}
+            >
+              Back
+            </button>
+            <button
+              className="text-button"
+              disabled={busy}
+              onClick={() => leaveForm(source ? profileRouteFromEditor(source.id) : currentDirectoryContext())}
+            >
+              Cancel
+            </button>
+          </div>
           {step < steps.length - 1 ? (
             <button className="primary" onClick={() => validateStep(step) && setStep(step + 1)}>
               Continue <ChevronRight size={16} />
@@ -1464,7 +1476,8 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
   const [renew, setRenew] = useState(false);
   const [resign, setResign] = useState(false);
   const [busy, setBusy] = useState(false);
-  const directoryReturn = safeDirectoryReturn(id);
+  const directoryReturn = profileDirectoryContext();
+  const returnQueue = workQueue(new URLSearchParams(directoryReturn.split("?")[1] || "").get("queue"));
   const load = useCallback(
     (clear = true) => {
       const currentRequest = ++requestId.current;
@@ -1512,11 +1525,13 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
     work: !!employee.work,
     insurance: !!employee.insurance,
     financial: !!employee.financial,
+    documents: capabilities.includes("employees.documents.view"),
   };
   const tabs = [
     "overview",
     ...Object.keys(can).filter((x) => can[x]),
     ...(employee.licenses ? ["licenses", "contracts", "notifications"] : []),
+    ...(can.documents ? ["documents"] : []),
   ];
   const refresh = async () => {
     try {
@@ -1567,7 +1582,7 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
     { label: "Overview", items: ["overview"] },
     { label: "Personal", items: tabs.filter((item) => ["personal", "family"].includes(item)) },
     { label: "Employment", items: tabs.filter((item) => ["work", "contracts", "notifications"].includes(item)) },
-    { label: "Benefits & records", items: tabs.filter((item) => ["financial", "insurance", "licenses"].includes(item)) },
+    { label: "Benefits & records", items: tabs.filter((item) => ["financial", "insurance", "licenses", "documents"].includes(item)) },
   ].filter((group) => group.items.length);
   const activeGroup = profileGroups.find((group) => group.items.includes(tab)) || profileGroups[0];
   const tabLabel = (item) => (item === "overview" ? "Overview" : labels[item]);
@@ -1584,11 +1599,10 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
         <aside className="employee-context-panel">
           <button className="back-to-setup" onClick={() => go(directoryReturn)}>
             <ArrowLeft size={15} />
-            All employees
+            {returnQueue ? `Back to ${returnQueue.title}` : "All employees"}
           </button>
           <div className="employee-context-identity">
             <span className="employee-monogram">{employee.employee_number}</span>
-            <p className="eyebrow">EMPLOYEE PROFILE</p>
             <h1 dir="auto">{employee.personal?.arabic_full_name || "Employee"}</h1>
             <p>{employee.personal?.english_full_name}</p>
             <div className="profile-meta">
@@ -1618,14 +1632,13 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
         <div className="employee-profile-main">
           <header className="employee-profile-header">
             <div>
-              <h2>Employee details</h2>
-              <p>Review information and manage employee records by section.</p>
+              <h2>{tabLabel(tab)}</h2>
             </div>
             <div className="profile-actions">
             {capabilities.includes("employees.edit") && (
               <button
                 className="primary"
-                onClick={() => go(`employees/${id}/edit?return_to=${encodeURIComponent(directoryReturn)}`)}
+                onClick={() => go(editRouteFromProfile(id))}
               >
                 <Pencil size={15} />
                 Edit Employee
@@ -1927,6 +1940,15 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
           />
         </DetailSection>
       )}
+      {tab === "documents" && (
+        <EmployeeDocuments
+          employeeId={id}
+          token={token}
+          toast={toast}
+          canEdit={capabilities.includes("employees.documents.edit")}
+          canReview={capabilities.includes("employees.documents.review")}
+        />
+      )}
       {tab === "contracts" && (
         <DetailSection title="Contract History">
           <RecordList
@@ -2110,6 +2132,175 @@ function RecordList({ title, records, fields, edit, action }) {
       )}
     </section>
   );
+}
+
+function EmployeeDocuments({ employeeId, token, toast, canEdit, canReview }) {
+  const [items, setItems] = useState(null);
+  const [types, setTypes] = useState([]);
+  const [adding, setAdding] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    try {
+      const [result, documentTypes] = await Promise.all([
+        documentsApi.list({ employee_id: employeeId, page: 1, page_size: 100 }, token),
+        documentsApi.types(token),
+      ]);
+      setItems(result.data || []);
+      setTypes(documentTypes || []);
+    } catch (error) {
+      setItems([]);
+      toast(error.message, "error");
+    }
+  }, [employeeId, token, toast]);
+  useEffect(() => { load(); }, [load]);
+  const updateStatus = async (documentId, status) => {
+    const rejectionReason = status === "rejected" ? window.prompt("Why is this document rejected?") : undefined;
+    if (status === "rejected" && !rejectionReason?.trim()) return;
+    setBusy(true);
+    try {
+      await documentsApi.update(documentId, { status, ...(rejectionReason ? { rejection_reason: rejectionReason } : {}) }, token);
+      await load();
+      toast(`Document marked ${status}.`, "success");
+    } catch (error) { toast(error.message, "error"); }
+    finally { setBusy(false); }
+  };
+  return (
+    <DetailSection
+      title="Documents & Compliance"
+      action={canEdit && <button className="secondary" onClick={() => setAdding(true)}><FilePlus2 size={15} /> Add document</button>}
+    >
+      <p className="section-description">Track hiring papers, identity documents, government forms, and their review or expiry status. Files are kept in private storage.</p>
+      {!items ? <DocumentLoadingRows /> : items.length === 0 ? (
+        <div className="empty compact-empty"><h3>No documents recorded</h3><p>Add the first hiring paper or compliance record for this employee.</p></div>
+      ) : (
+        <div className="document-records">
+          {items.map((item) => (
+            <article className="document-record" key={item.id}>
+              <div>
+                <p className="eyebrow">{item.document_type?.category || "document"}</p>
+                <strong>{item.document_type?.name || "Document"}</strong>
+                <span>{item.reference_number ? `Reference ${item.reference_number}` : "No reference number"}</span>
+              </div>
+              <div className="document-record-meta">
+                <span className={`document-status ${item.status}`}>{item.status.replaceAll("_", " ")}</span>
+                <span>{item.expires_on ? `Expires ${date(item.expires_on)}` : item.issued_on ? `Issued ${date(item.issued_on)}` : "No dated validity"}</span>
+                <small>{item.original_file_name ? `File attached · ${item.original_file_name}` : "No file attached"}</small>
+              </div>
+              {canReview && !["verified", "waived"].includes(item.status) && (
+                <div className="document-record-actions">
+                  <button className="text-button" disabled={busy} onClick={() => updateStatus(item.id, "verified")}>Verify</button>
+                  <button className="text-button danger-text" disabled={busy} onClick={() => updateStatus(item.id, "rejected")}>Reject</button>
+                </div>
+              )}
+            </article>
+          ))}
+        </div>
+      )}
+      {adding && <DocumentEditor employeeId={employeeId} token={token} types={types} busy={busy} setBusy={setBusy} onClose={() => setAdding(false)} onSaved={async () => { setAdding(false); await load(); }} toast={toast} />}
+    </DetailSection>
+  );
+}
+
+export function DocumentsCompliance({ token, toast, go, capabilities = [] }) {
+  const [result, setResult] = useState(null);
+  const [status, setStatus] = useState("open");
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const canView = capabilities.includes("employees.documents.view");
+  const canReview = capabilities.includes("employees.documents.review");
+  const load = useCallback(async () => {
+    if (!canView) {
+      setLoading(false);
+      setError(null);
+      setResult([]);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const options = { page: 1, page_size: 100 };
+      if (status !== "open") options.status = status;
+      const response = await documentsApi.list(options, token);
+      const rows = response.data || [];
+      setResult(status === "open" ? rows.filter((item) => !["verified", "waived"].includes(item.status)) : rows);
+    } catch (requestError) {
+      setResult(null);
+      setError(requestError);
+      toast(requestError.message || "Documents could not be loaded.", "error");
+    } finally { setLoading(false); }
+  }, [canView, status, token, toast]);
+  useEffect(() => { load(); }, [load]);
+  return <section className="section-view documents-compliance-view">
+    <div className="section-head">
+      <div><h1>Documents & Compliance</h1></div>
+    </div>
+    {!canView ? <div className="empty" role="status"><h3>Documents access is restricted</h3><p>You do not have permission to view employee document records.</p></div> : <>
+    <div className="toolbar documents-toolbar">
+      <label>Status<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="open">Needs attention</option><option value="received">Received</option><option value="under_review">Under review</option><option value="verified">Verified</option><option value="rejected">Rejected</option><option value="expired">Expired</option><option value="waived">Waived</option></select></label>
+      <span>{loading ? "Loading documents…" : result ? `${result.length} document${result.length === 1 ? "" : "s"}` : "Documents unavailable"}</span>
+    </div>
+    {loading ? <DocumentLoadingRows /> : error ? <div className="empty" role="alert"><h3>Couldn’t load documents</h3><p>{error.message || "Try again to load employee document records."}</p><button className="secondary" onClick={load}>Retry</button></div> : result.length === 0 ? <div className="empty"><h3>No documents in this view</h3><p>Records will appear here as teams collect and review employee documents.</p></div> : <div className="document-register">
+      {result.map((item) => <article key={item.id} className="document-register-row">
+        <div><strong>{item.document_type?.name || "Document"}</strong><span>{item.document_type?.category || "Other"}</span></div>
+        <div><strong dir="auto">{item.employee?.arabic_full_name || item.employee?.english_full_name || "Employee"}</strong><span>#{item.employee?.employee_number || "—"}</span></div>
+        <div><span className={`document-status ${item.status}`}>{item.status.replaceAll("_", " ")}</span><small>{item.expires_on ? `Expires ${date(item.expires_on)}` : "No expiry"}</small></div>
+        <div className="document-register-actions"><button className="text-button" onClick={() => go(`employees/${item.employee_id}?section=documents`)}>Open employee</button>{canReview && item.status !== "verified" && <button className="text-button" onClick={async () => { try { await documentsApi.update(item.id, { status: "verified" }, token); await load(); toast("Document verified.", "success"); } catch (error) { toast(error.message, "error"); } }}>Verify</button>}</div>
+      </article>)}
+    </div>}
+    </>}
+  </section>;
+}
+
+function DocumentLoadingRows() {
+  return <div className="loading-list" aria-label="Loading documents" aria-live="polite">{[1, 2, 3, 4].map((item) => <div className="skeleton" key={item} />)}</div>;
+}
+
+function DocumentEditor({ employeeId, token, types, busy, setBusy, onClose, onSaved, toast }) {
+  const [form, setForm] = useState({ document_type_id: "", reference_number: "", issued_on: "", expires_on: "", notes: "", file: null });
+  const selectedType = types.find((item) => String(item.id) === String(form.document_type_id));
+  const save = async (event) => {
+    event.preventDefault();
+    if (!form.document_type_id) return toast("Choose a document type.", "error");
+    if (selectedType?.requires_expiry && !form.expires_on) return toast("This document needs an expiry date.", "error");
+    setBusy(true);
+    let uploadedPath = null;
+    try {
+      if (form.file) {
+        if (!supabase) throw new Error("File upload is unavailable until Supabase browser authentication is configured.");
+        const extension = form.file.name.includes(".") ? form.file.name.split(".").pop().replace(/[^a-zA-Z0-9]/g, "") : "bin";
+        const objectId = draftId();
+        uploadedPath = `employees/${employeeId}/${objectId}/${objectId}.${extension || "bin"}`;
+        const { error } = await supabase.storage.from("employee-documents").upload(uploadedPath, form.file, { upsert: false, contentType: form.file.type });
+        if (error) throw error;
+      }
+      await documentsApi.create({
+        employee_id: employeeId,
+        document_type_id: Number(form.document_type_id),
+        status: "received",
+        reference_number: form.reference_number,
+        issued_on: form.issued_on,
+        expires_on: form.expires_on,
+        notes: form.notes,
+        ...(form.file ? { original_file_name: form.file.name, content_type: form.file.type, file_size_bytes: form.file.size, storage_path: uploadedPath } : {}),
+      }, token);
+      toast("Document recorded.", "success");
+      await onSaved();
+    } catch (error) {
+      if (uploadedPath && supabase) await supabase.storage.from("employee-documents").remove([uploadedPath]);
+      toast(error.message || "Document could not be saved.", "error");
+    } finally { setBusy(false); }
+  };
+  return <Drawer title="Add document" onClose={onClose}>
+    <form onSubmit={save}>
+      <label>Document type<select required value={form.document_type_id} onChange={(event) => setForm({ ...form, document_type_id: event.target.value })}><option value="">Choose document type</option>{types.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+      <label>Reference number<input value={form.reference_number} onChange={(event) => setForm({ ...form, reference_number: event.target.value })} /></label>
+      <label>Issued on<input type="date" value={form.issued_on} onChange={(event) => setForm({ ...form, issued_on: event.target.value })} /></label>
+      <label>Expires on {selectedType?.requires_expiry ? <b aria-label="Required">*</b> : ""}<input required={selectedType?.requires_expiry} type="date" value={form.expires_on} onChange={(event) => setForm({ ...form, expires_on: event.target.value })} /></label>
+      <label>Private file <input type="file" accept="application/pdf,image/jpeg,image/png" onChange={(event) => setForm({ ...form, file: event.target.files?.[0] || null })} /><small>PDF, JPG, or PNG; maximum 10 MB.</small></label>
+      <label>Notes<textarea rows="3" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} /></label>
+      <footer className="drawer-actions"><button type="button" className="secondary" onClick={onClose} disabled={busy}>Cancel</button><button className="primary" disabled={busy}>{busy ? "Saving…" : "Record document"}</button></footer>
+    </form>
+  </Drawer>;
 }
 function LicenseEditor({
   item,

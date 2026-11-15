@@ -24,9 +24,10 @@ import {
 import logo from "../assets/images/jushi-logo.png";
 import { authConfigured, LOCAL_DEV_ACCESS_TOKEN, localDevAuthBypass, supabase } from "./auth";
 import { capabilitiesApi, dashboardApi, employeesApi, invalidateCapabilitiesCache, invalidateDashboardData, invalidateEmployeeLookupCache, setupApi } from "./api";
-import { EmployeeDetail, EmployeeForm, EmployeesList } from "./Employees";
-import { workQueueHash } from "./workQueues";
+import { DocumentsCompliance, EmployeeDetail, EmployeeForm, EmployeesList } from "./Employees";
+import { workQueueDefinitions, workQueueHash } from "./workQueues";
 import { Dashboard } from "./Dashboard";
+import { DataQuality, Lifecycle } from "./PeopleOperations";
 
 const groups = [
   {
@@ -281,10 +282,6 @@ function Login({ onSession }) {
           <div className="login-brand-copy">
             <p className="eyebrow">ONE SECURE WORKSPACE</p>
             <h1>People operations, thoughtfully connected.</h1>
-            <p>
-              Manage people, policies, and operations from one secure
-              workspace.
-            </p>
           </div>
           <div className="workforce-visual" aria-hidden="true">
             <div className="visual-grid" />
@@ -304,7 +301,6 @@ function Login({ onSession }) {
             <span><b>03</b> Insights</span>
           </div>
         </div>
-        <footer>Designed by Moaz Shiref</footer>
       </section>
       <section className="login-form-panel">
         <div className="login-form-shell">
@@ -318,7 +314,6 @@ function Login({ onSession }) {
             <div className="login-form-heading">
               <p className="eyebrow">HR MANAGEMENT SYSTEM</p>
               <h1>Welcome back</h1>
-              <p className="muted">Sign in to access your HR workspace.</p>
             </div>
             <form onSubmit={submit} noValidate>
               <label>
@@ -361,15 +356,73 @@ function Login({ onSession }) {
               </button>
             </form>
           </div>
-          <p className="login-mobile-signature">Designed by Moaz Shiref</p>
         </div>
       </section>
     </main>
   );
 }
 
-function Sidebar({ session, page, setPage, logout, isOpen, onOpen, close }) {
+function Sidebar({ session, page, routeHash, setPage, logout, activePanel, setActivePanel, isOpen, onOpen, close }) {
   const user = session.user;
+  const [openSetupGroup, setOpenSetupGroup] = useState("Organization");
+  const [openPeopleGroup, setOpenPeopleGroup] = useState("");
+  const peopleRoutes = ["people", "employees", "work-queues", "lifecycle", "documents", "data-quality"];
+  const setupRoutes = [
+    "home", "users", "roles", "insurance", "departments", "teams", "positions", "projects",
+    "governorates", "religions", "marital-statuses", "diplomas", "leaving-reasons", "license-types",
+    "shift-types", "banks",
+  ];
+  const isPeople = peopleRoutes.some((route) => page === route || page.startsWith(`${route}/`));
+  const isDashboard = page === "dashboard" || page.startsWith("dashboard/");
+  const isSetup = employeeLookupResources.has(page) || setupRoutes.some((route) => page === route || page.startsWith(`${route}/`));
+  const routeParams = new URLSearchParams(routeHash.split("?")[1] || "");
+  const dashboardView = routeParams.get("view") || "overview";
+  const returnTo = routeParams.get("return_to");
+  const returnParams = new URLSearchParams((returnTo || "").split("?")[1] || "");
+  const hasQueueContext = Boolean(routeParams.get("queue") || returnParams.get("queue"));
+  const currentQueue = routeParams.get("queue") || returnParams.get("queue") || "";
+  const activeModule = isDashboard ? "analytics" : isPeople ? "people" : isSetup ? "setup" : null;
+  const railActive = activePanel || activeModule;
+  const setupGroupForPage = page === "users" || page === "roles" ? "Access & Security" : page === "insurance" ? "Insurance" : ["religions", "marital-statuses", "diplomas", "leaving-reasons", "license-types", "shift-types", "banks"].includes(page) ? "Employee Reference Data" : "Organization";
+  const togglePanel = (panel) => {
+    setActivePanel((current) => current === panel ? null : panel);
+    if (panel === "people" && !isPeople) setPage("employees");
+  };
+  const iconForRoute = (route) => ({
+    dashboard: LayoutDashboard, employees: UsersRound, "work-queues": Clock3, documents: FileText,
+    departments: Building2, teams: Network, positions: BriefcaseBusiness, projects: FolderKanban,
+    governorates: MapPinned, religions: ShieldCheck, "marital-statuses": UsersRound, diplomas: GraduationCap,
+    "leaving-reasons": SlidersHorizontal, "license-types": FileText, "shift-types": Clock3, banks: Landmark,
+    users: UserRoundCog, roles: ShieldCheck, insurance: HeartPulse,
+  }[route.split("?")[0]] || Settings2);
+  useEffect(() => {
+    if (activePanel === "setup") setOpenSetupGroup(setupGroupForPage);
+  }, [activePanel, page]);
+  const navigate = (route) => {
+    setPage(route);
+    if (isOpen) close();
+  };
+  const panelItem = (route, label, selected, description) => {
+    const Icon = iconForRoute(route);
+    return <button key={route} className={`navigation-panel-item${selected ? " selected" : ""}`} aria-current={selected ? "page" : undefined} onClick={() => navigate(route)}>
+      <Icon size={16} aria-hidden="true" />
+      <span><b>{label}</b>{description && <small>{description}</small>}</span>
+    </button>;
+  };
+  const setupGroup = (title, routes) => (
+    <section key={title} className={`navigation-panel-group${openSetupGroup === title ? " open" : ""}`}>
+      <button type="button" className="navigation-panel-group-toggle" aria-expanded={openSetupGroup === title} onClick={() => setOpenSetupGroup((current) => current === title ? "" : title)}>
+        <span>{title}</span><ChevronRight size={15} />
+      </button>
+      {openSetupGroup === title && <div className="navigation-panel-group-items">{routes}</div>}
+    </section>
+  );
+  const queueGroups = [
+    ["Contracts & identity", [["contracts_expiring", "Expiring contracts"], ["contracts_expired", "Expired contracts"], ["identity_expiring", "Expiring identity documents"], ["identity_expired", "Expired identity documents"]]],
+    ["Employment lifecycle", [["in_probation", "Employees in probation"], ["probation_due", "Probation due"]]],
+    ["Documents & administration", [["missing_form_1", "Missing Form 1"], ["missing_form_6", "Missing Form 6"], ["missing_bank", "Missing bank details"], ["due_soon", "Due soon"], ["overdue", "Overdue"]]],
+    ["Benefits", [["medical_eligible", "Medical eligible"], ["life_eligible", "Life eligible"]]],
+  ];
   return (
     <>
       <button
@@ -379,68 +432,45 @@ function Sidebar({ session, page, setPage, logout, isOpen, onOpen, close }) {
       >
         ☰
       </button>
-      <aside className={`sidebar ${isOpen ? "open" : ""}`}>
-        <div className="sidebar-top">
-          <div className="brand-lockup">
-            <img src={logo} alt="JUSHI" className="brand" />
-            <div>
-              <strong>JUSHI</strong>
-              <p className="brand-caption">HR MANAGEMENT</p>
-            </div>
-          </div>
-          <nav>
-            <p className="nav-label">Workspace</p>
-            <button aria-current={page === "dashboard" ? "page" : undefined} className={`nav-item ${page === "dashboard" ? "selected" : ""}`} onClick={() => { setPage("dashboard"); close(); }}>
-              <LayoutDashboard size={17} />
-              <span>Workforce Analytics</span>
-            </button>
-            <button
-              aria-current={page.startsWith("employees") ? "page" : undefined}
-              className={`nav-item ${page.startsWith("employees") ? "selected" : ""}`}
-              onClick={() => {
-                setPage("employees");
-                close();
-              }}
-            >
-              <UsersRound size={17} />
-              <span>Employees</span>
-            </button>
-            <p className="nav-label nav-label-settings">Configuration</p>
-            <button
-              aria-current={page !== "dashboard" && !page.startsWith("employees") ? "page" : undefined}
-              className={`nav-item ${page !== "dashboard" && !page.startsWith("employees") ? "selected" : ""}`}
-              onClick={() => {
-                setPage("home");
-                close();
-              }}
-            >
-              <Settings2 size={17} />
-              <span>SetUp</span>
-            </button>
-          </nav>
-        </div>
-        <div className="side-bottom">
-          <div className="current-user">
-            <span className="avatar">
-              {initials(user.user_metadata?.full_name || user.email)}
-            </span>
-            <div>
-              <strong>{user.user_metadata?.full_name || user.email}</strong>
-              <small>Super Admin</small>
-            </div>
-          </div>
-          <button className="logout" onClick={logout}>
-            <LogOut size={15} /> Logout
-          </button>
+      <aside className="navigation-rail" aria-label="Primary navigation">
+        <div className="rail-brand"><img src={logo} alt="JUSHI" className="brand" /></div>
+        <nav className="rail-nav">
+          <button type="button" title="Workforce Analytics" aria-label="Workforce Analytics" aria-pressed={activePanel === "analytics"} className={railActive === "analytics" ? "selected" : ""} onClick={() => togglePanel("analytics")}><LayoutDashboard size={19} /></button>
+          <button type="button" title="People" aria-label="People" aria-pressed={activePanel === "people"} className={railActive === "people" ? "selected" : ""} onClick={() => togglePanel("people")}><UsersRound size={19} /></button>
+          <button type="button" title="SetUp" aria-label="SetUp" aria-pressed={activePanel === "setup"} className={railActive === "setup" ? "selected" : ""} onClick={() => togglePanel("setup")}><Settings2 size={19} /></button>
+        </nav>
+        <div className="rail-bottom">
+          <span className="avatar" title={user.user_metadata?.full_name || user.email}>{initials(user.user_metadata?.full_name || user.email)}</span>
+          <button type="button" className="rail-logout" title="Logout" aria-label="Logout" onClick={logout}><LogOut size={18} /></button>
         </div>
       </aside>
-      {isOpen && (
-        <button
-          className="scrim"
-          aria-label="Close navigation"
-          onClick={close}
-        />
-      )}
+      {activePanel && <button className={`navigation-dismiss${isOpen ? " mobile-open" : ""}`} aria-label="Close navigation panel" onClick={() => { setActivePanel(null); close(); }} />}
+      <aside className={`navigation-panel${activePanel ? " open" : ""}${isOpen ? " mobile-open" : ""}`} aria-label={activePanel === "analytics" ? "Workforce Analytics navigation" : activePanel === "people" ? "People navigation" : "SetUp navigation"}>
+        {activePanel === "analytics" && <>
+          <header><p>Workspace</p><h2>Workforce Analytics</h2></header>
+          <nav>{panelItem("dashboard?view=overview", "Overview", dashboardView === "overview")} {panelItem("dashboard?view=risks", "Operational Risks", dashboardView === "risks")} {panelItem("dashboard?view=explorer", "Workforce Explorer", dashboardView === "explorer")}</nav>
+        </>}
+        {activePanel === "people" && <>
+          <header><p>Module</p><h2>People</h2></header>
+          <nav className="people-panel-nav">
+            {panelItem("employees", "Employees", (page === "employees" || page.startsWith("employees/")) && !hasQueueContext)}
+            <section className={`navigation-panel-group${openPeopleGroup === "queues" || hasQueueContext ? " open" : ""}`}>
+              <button type="button" className="navigation-panel-group-toggle" aria-expanded={openPeopleGroup === "queues" || hasQueueContext} onClick={() => setOpenPeopleGroup((current) => current === "queues" ? "" : "queues")}><span>Work Queues</span><ChevronRight size={15} /></button>
+              {(openPeopleGroup === "queues" || hasQueueContext) && <div className="navigation-panel-group-items queue-panel-items">{queueGroups.map(([group, items]) => <div key={group} className="queue-panel-group"><p>{group}</p>{items.filter(([key]) => workQueueDefinitions[key]).map(([key, label]) => panelItem(workQueueHash(key), label, currentQueue === key))}</div>)}</div>}
+            </section>
+            {panelItem("documents", "Documents & Compliance", page === "documents")}
+          </nav>
+        </>}
+        {activePanel === "setup" && <>
+          <header><p>Configuration</p><h2>SetUp</h2></header>
+          <nav className="navigation-panel-groups">
+            {setupGroup("Organization", ["departments", "teams", "positions", "projects", "governorates"].map((route) => panelItem(route, titleCase(route), page === route)))}
+            {setupGroup("Employee Reference Data", ["religions", "marital-statuses", "diplomas", "leaving-reasons", "license-types", "shift-types", "banks"].map((route) => panelItem(route, titleCase(route), page === route)))}
+            {setupGroup("Access & Security", [panelItem("users", "Users", page === "users"), panelItem("roles", "Roles & Permissions", page === "roles")])}
+            {setupGroup("Insurance", [panelItem("insurance", "Insurance Settings", page === "insurance")])}
+          </nav>
+        </>}
+      </aside>
     </>
   );
 }
@@ -556,7 +586,6 @@ function MasterData({ resource, token, toast }) {
         <div>
           <SetupBreadcrumb group={masterGroup} current={titleCase(resource)} />
           <h1>{titleCase(resource)}</h1>
-          <p>Manage the options HR teams use when creating and updating employee records.</p>
         </div>
         <button className="primary" onClick={() => setEditor({})}>
           + Add {singularTitle(resource)}
@@ -801,7 +830,6 @@ function Users({ token, toast, onCapabilitiesChanged }) {
         <div>
           <SetupBreadcrumb group="User Management" current="Users" />
           <h1>Users</h1>
-          <p>Manage who can access the HR Management System.</p>
         </div>
         <button className="primary" onClick={() => setEditor({ role_ids: [] })}>
           + Add User
@@ -1150,7 +1178,6 @@ function Insurance({ token, toast }) {
         <div>
           <SetupBreadcrumb group="Organization" current="Insurance Settings" />
           <h1>Insurance Settings</h1>
-          <p>Set eligibility and comprehensive health deduction rules.</p>
         </div>
         <div className="row-actions">
           {editing && (
@@ -1218,7 +1245,6 @@ function Home({ go }) {
       <header className="section-head setup-page-head">
         <div>
           <h1>SetUp</h1>
-          <p>Manage HR configuration, access, and reference data.</p>
         </div>
       </header>
       <div className="setup-layout">
@@ -1257,7 +1283,9 @@ function Home({ go }) {
 
 function AppShell({ session, onLogout }) {
   const [page, setPage] = useState(() => (location.hash.slice(1).split("?")[0]) || "home"),
+    [routeHash, setRouteHash] = useState(() => location.hash),
     [nav, setNav] = useState(false),
+    [activePanel, setActivePanel] = useState(null),
     [toast, setToast] = useState(null),
     [capabilities, setCapabilities] = useState([]);
   const securityRefreshQueued = useRef(false);
@@ -1300,24 +1328,46 @@ function AppShell({ session, onLogout }) {
     };
   }, [session.access_token, session.user?.id, onLogout]);
   useEffect(() => {
-    const onHash = () => setPage((location.hash.slice(1).split("?")[0]) || "home");
+    const onHash = () => {
+      setPage((location.hash.slice(1).split("?")[0]) || "home");
+      // Query-only hash changes (for example queue switches) must also update
+      // the module panel's active row, even when the pathname stays `employees`.
+      setRouteHash(location.hash);
+    };
     addEventListener("hashchange", onHash);
     return () => removeEventListener("hashchange", onHash);
+  }, []);
+  useEffect(() => {
+    const closeOnEscape = (event) => {
+      if (event.key !== "Escape") return;
+      setActivePanel(null);
+      setNav(false);
+    };
+    addEventListener("keydown", closeOnEscape);
+    return () => removeEventListener("keydown", closeOnEscape);
   }, []);
   const go = (id) => (location.hash = id);
   const moduleContext = page === "dashboard"
     ? ["Workspace", "Workforce intelligence"]
-    : page.startsWith("employees")
+    : page.startsWith("employees") || ["people", "documents", "work-queues", "lifecycle", "data-quality"].includes(page)
       ? ["Workspace", "People operations"]
       : ["Workspace", "Organization settings"];
   const employeeParts = page.split("/");
   let content =
     page === "dashboard" ? (
       <Dashboard token={session.access_token} go={go} />
-    ) : page === "employees" ? (
+    ) : page === "people" ? (
+      <EmployeesList token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
+    )
+    : page === "work-queues" ? <WorkQueuesRedirect go={go} />
+    : page === "lifecycle" ? <Lifecycle go={go} />
+    : page === "data-quality" ? <DataQuality go={go} />
+    : page === "employees" ? (
       <EmployeesList token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
     ) : page === "employees/new" ? (
       <EmployeeForm token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
+    ) : page === "documents" ? (
+      <DocumentsCompliance token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
     ) : employeeParts[0] === "employees" && employeeParts[2] === "edit" ? (
       <EmployeeEditorLoader id={employeeParts[1]} token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
     ) : employeeParts[0] === "employees" && employeeParts[1] ? (
@@ -1335,17 +1385,20 @@ function AppShell({ session, onLogout }) {
       <MasterData resource={page} token={session.access_token} toast={notify} />
     );
   return (
-    <div className="app-shell">
+    <div className={`app-shell${activePanel ? " navigation-open" : ""}`}>
       <Sidebar
         session={session}
         page={page}
+        routeHash={routeHash}
         setPage={(p) => {
           location.hash = p;
         }}
         logout={onLogout}
         isOpen={nav}
-        onOpen={() => setNav(true)}
+        onOpen={() => { setNav(true); setActivePanel((current) => current || (page.startsWith("dashboard") ? "analytics" : page.startsWith("employees") || ["people", "work-queues", "documents", "lifecycle", "data-quality"].includes(page) ? "people" : "setup")); }}
         close={() => setNav(false)}
+        activePanel={activePanel}
+        setActivePanel={setActivePanel}
       />
       <main className="main-content">
         <header className="topbar">
@@ -1369,6 +1422,11 @@ function AppShell({ session, onLogout }) {
       <Toast toast={toast} clear={() => setToast(null)} />
     </div>
   );
+}
+
+function WorkQueuesRedirect({ go }) {
+  useEffect(() => { go(workQueueHash("contracts_expiring")); }, [go]);
+  return <section className="section-view"><div className="loading-list"><div className="skeleton" /></div></section>;
 }
 
 function EmployeeEditorLoader({ id, token, toast, go, capabilities }) {
