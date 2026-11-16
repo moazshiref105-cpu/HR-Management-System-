@@ -19,9 +19,13 @@ import {
   employeeLookupApi,
   invalidateDashboardData,
   subscribeEmployeeLookupInvalidation,
+  socialInsuranceApi,
+  subscribeSocialInsuranceInvalidation,
 } from "./api";
 import { supabase } from "./auth";
+import { Modal } from "./Modal";
 import { workQueue } from "./workQueues";
+import { DIRECTORY_DEFAULTS, EMPLOYEE_CLASSIFICATIONS, EMPLOYEE_STATUSES, employeeClassificationLabel, employeeStatusLabel, normalizeEmployeeClassification } from "./employeeContract";
 import {
   currentDirectoryContext,
   editRouteFromProfile,
@@ -96,6 +100,27 @@ const date = (value) =>
         new Date(`${value}T00:00:00`),
       )
     : "—";
+
+const notificationCopy = {
+  identity_card_expiry: { title: "Identity card expiry", category: "Identity documents", section: "personal" },
+  license_expiry: { title: "License expiry", category: "Documents & compliance", section: "licenses" },
+  form_1_deadline: { title: "Form 1 deadline", category: "Social insurance", section: "insurance" },
+  medical_insurance_eligibility: { title: "Medical insurance", category: "Benefits", section: "insurance" },
+  life_insurance_eligibility: { title: "Life insurance", category: "Benefits", section: "insurance" },
+};
+const referenceCopy = {
+  "insurance.life": { title: "Life insurance", category: "Benefits", section: "insurance" },
+  "insurance.medical": { title: "Medical insurance", category: "Benefits", section: "insurance" },
+  "personal.identity_card_expiration_date": { title: "Identity card expiry", category: "Identity documents", section: "personal" },
+};
+const notificationMeta = (item) => referenceCopy[item.reference_key] || notificationCopy[item.notification_type] || { title: "Employee notification", category: "Employee record", section: "overview" };
+const notificationDayDistance = (value) => {
+  if (!value) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const due = new Date(`${value}T00:00:00`);
+  return Math.round((due - today) / 86400000);
+};
+const reminderText = (days) => days === 0 ? "Due today" : days > 0 ? `Due in ${days} day${days === 1 ? "" : "s"}` : `Overdue by ${Math.abs(days)} day${Math.abs(days) === 1 ? "" : "s"}`;
 const daysFromToday = (value) => {
   if (!value) return "—";
   const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -105,8 +130,12 @@ const daysFromToday = (value) => {
 };
 const employeeListHash = () => {
   const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  const queue = params.get("queue") || "";
+  const status = params.get("status") || (queue ? "" : DIRECTORY_DEFAULTS.status);
+  const requestedClassification = normalizeEmployeeClassification(params.get("classification") || DIRECTORY_DEFAULTS.classification);
+  const classification = status === "resigned" || !["all", ...EMPLOYEE_CLASSIFICATIONS.map(({ value }) => value)].includes(requestedClassification) ? "all" : requestedClassification;
   return {
-    search: params.get("search") || "", status: params.get("status") || "", department: params.get("department") || "", team: params.get("team") || "", position: params.get("position") || "", project: params.get("project") || "", governorate: params.get("governorate") || "", queue: params.get("queue") || "", from: params.get("from") || "", to: params.get("to") || "",
+    search: params.get("search") || "", status, classification, department: params.get("department") || "", team: params.get("team") || "", position: params.get("position") || "", project: params.get("project") || "", governorate: params.get("governorate") || "", queue, from: params.get("from") || "", to: params.get("to") || "",
     page: Number(params.get("page") || 1), pageSize: Number(params.get("page_size") || 25), sort: params.get("sort") || "employee_number", direction: params.get("direction") || "asc",
   };
 };
@@ -147,7 +176,7 @@ const employeeFormValues = (employee) => ({
   ...employee.insurance,
   ...employee.financial,
   bank_id: employee.financial?.bank?.id || "",
-  employee_classification: employee.employee_classification,
+  employee_classification: normalizeEmployeeClassification(employee.employee_classification) || "standard",
 });
 const numericFormFields = new Set([
   "religion_id",
@@ -206,13 +235,10 @@ function useEmployeeInvalidation(employeeId, token, onInvalidated) {
 }
 
 function Badge({ status }) {
+  const safeStatus = EMPLOYEE_STATUSES.includes(status) ? status : "unknown";
   return (
-    <span className={`employee-badge ${status}`}>
-      {status === "active"
-        ? "Active"
-        : status === "resigned"
-          ? "Resigned"
-          : "Inactive"}
+    <span className={`employee-badge ${safeStatus}`}>
+      {employeeStatusLabel(status)}
     </span>
   );
 }
@@ -324,7 +350,8 @@ function useLookups(token, enabled = true) {
 
 export function EmployeesList({ token, go, toast, capabilities = [] }) {
   const [records, setRecords] = useState(null);
-  const lookup = useLookups(token, !!records);
+  const [recordResignation, setRecordResignation] = useState(false);
+  const lookup = useLookups(token, !!records || recordResignation);
   const [filters, setFilters] = useState(employeeListHash);
   const [pagination, setPagination] = useState(null);
   const [error, setError] = useState("");
@@ -392,6 +419,7 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
     token,
     debouncedSearch,
     filters.status,
+    filters.classification,
     filters.department,
     filters.team,
     filters.position,
@@ -406,8 +434,12 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
     filters.direction,
     requestKey,
   ]);
-  const update = (key, value) =>
-    setFilters((current) => ({ ...current, [key]: value, page: 1 }));
+  const update = (key, value) => setFilters((current) => ({
+    ...current,
+    [key]: value,
+    ...(key === "status" && value === "resigned" ? { classification: "all" } : {}),
+    page: 1,
+  }));
   const setPage = (page) => setFilters((current) => ({ ...current, page }));
   const lookupKey = {
     department: "departments",
@@ -433,7 +465,8 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
     </select>
   );
   const filterLabel = (key, value) => {
-    if (key === "status") return `Status: ${value}`;
+    if (key === "status") return `Status: ${employeeStatusLabel(value)}`;
+    if (key === "classification") return `Classification: ${employeeClassificationLabel(value)}`;
     if (key === "from") return `From: ${date(value)}`;
     if (key === "to") return `To: ${date(value)}`;
     const item = lookup?.[lookupKey[key]]?.find((entry) => String(entry.id) === String(value));
@@ -443,7 +476,7 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
   const activeFilters = Object.entries(filters).filter(
     ([key, value]) =>
       !["search", "page", "pageSize", "sort", "direction", "queue"].includes(key) &&
-      value,
+      value && !(key === "classification" && value === "all") && !(key === "status" && !queue && value === DIRECTORY_DEFAULTS.status),
   );
   const total = pagination?.total ?? 0;
   const start =
@@ -465,12 +498,13 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
   const resetFilters = () =>
     setFilters({
       search: "",
-      status: "",
+      status: filters.queue ? "" : DIRECTORY_DEFAULTS.status,
+      classification: "all",
       department: "",
       team: "",
       position: "",
       project: "",
-      governorate: "", queue: "", from: "", to: "",
+      governorate: "", queue: filters.queue, from: filters.queue ? filters.from : "", to: filters.queue ? filters.to : "",
       page: 1,
       pageSize: filters.pageSize,
       sort: "employee_number",
@@ -494,6 +528,11 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
             <p>{queue.subtitle}</p>
           </div>
           <div className="work-queue-actions">
+            {(["contracts_expiring", "contracts_expired"].includes(filters.queue) && capabilities.includes("employees.work.edit")) && (
+              <button className="secondary" onClick={() => go("contracts/renewals")}>
+                Manage contracts
+              </button>
+            )}
             <button className="text-button queue-back" onClick={clearQueue}>
               <ArrowLeft size={15} /> Back to all employees
             </button>
@@ -514,11 +553,18 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
               </small>
             </h1>
           </div>
-          {capabilities.includes("employees.create") && (
-            <button className="primary" onClick={() => go("employees/new")}>
-              <Plus size={17} /> Add Employee
-            </button>
-          )}
+          <div className="employee-header-actions">
+            {capabilities.includes("employees.edit") && (
+              <button className="danger-outline" onClick={() => setRecordResignation(true)}>
+                Record resignation
+              </button>
+            )}
+            {capabilities.includes("employees.create") && (
+              <button className="primary" onClick={() => go("employees/new")}>
+                <Plus size={17} /> Add Employee
+              </button>
+            )}
+          </div>
         </div>
       )}
       {!queue && <div className="employee-summary">
@@ -548,16 +594,14 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
           />
         </label>
         {select("department", "Departments")}
-        <select
-          aria-label="Employee status"
-          value={filters.status}
-          onChange={(e) => update("status", e.target.value)}
-        >
-          <option value="">All statuses</option>
-          <option value="active">Active</option>
-          <option value="resigned">Resigned</option>
-          <option value="inactive">Inactive</option>
+        <select aria-label="Employee status" value={filters.status} onChange={(e) => update("status", e.target.value)}>
+          {queue && <option value="">All statuses</option>}
+          {EMPLOYEE_STATUSES.map((status) => <option key={status} value={status}>{employeeStatusLabel(status)}</option>)}
         </select>
+        {filters.status !== "resigned" && <select aria-label="Employee classification" value={filters.classification} onChange={(e) => update("classification", e.target.value)}>
+          <option value="all">All classifications</option>
+          {EMPLOYEE_CLASSIFICATIONS.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
+        </select>}
         <button
           className="secondary"
           aria-expanded={showMoreFilters}
@@ -744,6 +788,18 @@ export function EmployeesList({ token, go, toast, capabilities = [] }) {
           </footer>
         </>
       )}
+      {recordResignation && (
+        <RecordResignationDrawer
+          token={token}
+          toast={toast}
+          reasons={lookup?.["leaving-reasons"] || []}
+          onClose={() => setRecordResignation(false)}
+          onSuccess={() => {
+            setRecordResignation(false);
+            setRequestKey((value) => value + 1);
+          }}
+        />
+      )}
     </section>
   );
 }
@@ -776,6 +832,7 @@ export function EmployeeForm({
   );
   const [occConflict, setOccConflict] = useState(false);
   const [stale, setStale] = useState(false);
+  const [pendingLeave, setPendingLeave] = useState(null);
   const steps = [
     "Personal",
     "Family",
@@ -823,8 +880,8 @@ export function EmployeeForm({
     return () => removeEventListener("beforeunload", warnBeforeUnload);
   }, [dirty]);
   const leaveForm = (target) => {
-    if (dirty && !window.confirm("You have unsaved employee changes. Leave without saving?")) return;
-    go(target);
+    if (dirty) setPendingLeave(target);
+    else go(target);
   };
   useEmployeeInvalidation(
     source?.id,
@@ -930,19 +987,16 @@ export function EmployeeForm({
       </section>
     );
   return (
-    <section className="section-view employees-view">
-      <div className="section-head">
-        <div>
-          <button
-            className="back-to-setup"
-            onClick={() => leaveForm(source ? profileRouteFromEditor(source.id) : currentDirectoryContext())}
-          >
-            <ArrowLeft size={15} />
-            Back to Employees
-          </button>
-          <h1>{source ? "Edit Employee" : "Add Employee"}</h1>
-        </div>
-      </div>
+    <>
+    <Modal
+      title={source ? "Edit Employee" : "Add Employee"}
+      size="large"
+      onClose={() => leaveForm(source ? profileRouteFromEditor(source.id) : currentDirectoryContext())}
+      closeOnBackdrop={!dirty}
+      canDismiss={!busy}
+      className="employee-form-modal"
+    >
+    <section className="employee-form-modal-content">
       {stale && dirty && (
         <Notice kind="warning">
           Employee data changed on the server while you were editing.
@@ -1112,7 +1166,7 @@ export function EmployeeForm({
                   }
                 >
                   <option value="standard">Standard</option>
-                  <option value="five_percent">5%</option>
+                  <option value="5_percent">5%</option>
                 </select>
               </label>
             </div>
@@ -1325,6 +1379,12 @@ export function EmployeeForm({
         </div>
       </div>
     </section>
+    </Modal>
+    {pendingLeave && <Modal title="Discard unsaved changes?" size="small" onClose={() => setPendingLeave(null)}>
+      <p>Your employee changes have not been saved.</p>
+      <footer className="modal-actions"><button type="button" className="secondary" onClick={() => setPendingLeave(null)}>Keep editing</button><button type="button" className="danger" onClick={() => go(pendingLeave)}>Leave without saving</button></footer>
+    </Modal>}
+    </>
   );
 }
 
@@ -1354,6 +1414,70 @@ function Info({ label, value }) {
     </article>
   );
 }
+
+function ContractHistoryRecord({ title, signingDate, expirationDate, renewedOn, current = false }) {
+  const expired = expirationDate && expirationDate < new Date().toISOString().slice(0, 10);
+  const status = current ? (expired ? "Expired" : "Current") : "Previous";
+  return (
+    <article className="contract-history-record">
+      <header>
+        <h3>{title}</h3>
+        <span className={expired ? "contract-status contract-status-expired" : "contract-status"}>{status}</span>
+      </header>
+      <dl>
+        <div className="contract-period">
+          <dt>Contract period</dt>
+          <dd>
+            <span><small>Start date</small><strong>{date(signingDate)}</strong></span>
+            <span><small>Expiration date</small><strong>{date(expirationDate)}</strong></span>
+          </dd>
+        </div>
+        <div>
+          <dt>Status</dt>
+          <dd>{status}</dd>
+        </div>
+        <div>
+          <dt>Renewed on</dt>
+          <dd>{date(renewedOn)}</dd>
+        </div>
+      </dl>
+    </article>
+  );
+}
+
+function EmployeeNotificationList({ notifications, onAction }) {
+  const grouped = Object.values((notifications || []).reduce((groups, item) => {
+    const key = [item.notification_type, item.source_id ?? "employee", item.due_date].join("|");
+    if (!groups[key]) groups[key] = { ...item, reminders: [] };
+    groups[key].reminders.push(item.reminder_threshold_days);
+    groups[key].states = [...(groups[key].states || []), item.status];
+    return groups;
+  }, {})).sort((left, right) => String(left.due_date || "").localeCompare(String(right.due_date || "")));
+  if (!grouped.length) return <div className="notification-empty">No open notifications for this employee.</div>;
+  return <div className="employee-notification-list" role="list">
+    {grouped.map((item) => {
+      const meta = notificationMeta(item);
+      const days = notificationDayDistance(item.due_date);
+      const complete = item.states.every((state) => ["resolved", "dismissed"].includes(state));
+      const status = complete
+        ? { label: "Completed", className: "completed" }
+        : days !== null && days < 0
+          ? { label: "Overdue", className: "overdue" }
+          : days !== null && days <= 7
+            ? { label: "Due soon", className: "due-soon" }
+            : { label: "Open", className: "open" };
+      const reminders = [...new Set(item.reminders)].sort((left, right) => right - left).map(reminderText).join(" · ");
+      return <article className="employee-notification-row" role="listitem" key={[item.notification_type, item.source_id, item.due_date].join("|")}>
+        <div className="notification-event"><strong>{meta.title}</strong><span>{meta.category}</span></div>
+        <div><small>Due date</small><span>{date(item.due_date)}</span></div>
+        <div><small>Reminders</small><span>{reminders || "—"}</span></div>
+        <div><small>Status</small><span className={`notification-status ${status.className}`}>{status.label}</span></div>
+        <div className="notification-action"><button className="text-button" onClick={() => onAction(meta.section)}>View details</button></div>
+      </article>;
+    })}
+  </div>;
+}
+
 function FamilyEditor({
   type,
   item,
@@ -1364,19 +1488,20 @@ function FamilyEditor({
   refreshLatest,
   keepEditing,
 }) {
+  const initialForm = item || (type === "wife"
+    ? { wife_name: "", identity_card_number: "", is_working: false }
+    : { child_name: "", identity_card_number: "", wife_id: "" });
   const [form, setForm] = useState(
-    item ||
-      (type === "wife"
-        ? { wife_name: "", identity_card_number: "", is_working: false }
-        : { child_name: "", identity_card_number: "", wife_id: "" }),
+    initialForm,
   );
+  const dirty = Object.keys(initialForm).some((key) => (form[key] ?? "") !== (initialForm[key] ?? ""));
   const title = `${item?.id ? "Edit" : "Add"} ${type === "wife" ? "Wife" : "Child"}`;
   const refresh = async () => {
     const latest = await refreshLatest(type, item.id);
     if (latest) setForm(latest);
   };
   return (
-    <Drawer title={title} onClose={onClose}>
+    <Modal title={title} size="small" onClose={onClose} closeOnBackdrop={!dirty} canDismiss={!dirty}>
       {conflict && (
         <Notice kind="danger">
           This record was updated by another user.
@@ -1390,7 +1515,7 @@ function FamilyEditor({
           </span>
         </Notice>
       )}
-      <form
+      <form className="modal-grid"
         onSubmit={(e) => {
           e.preventDefault();
           if (!/^\d{14}$/.test(form.identity_card_number)) return;
@@ -1443,29 +1568,16 @@ function FamilyEditor({
             </select>
           </label>
         )}
-        <button className="primary wide">Save</button>
+        <footer className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary">Save</button></footer>
       </form>
-    </Drawer>
-  );
-}
-function Drawer({ title, children, onClose }) {
-  return (
-    <div className="drawer-backdrop">
-      <aside className="drawer" role="dialog" aria-modal="true">
-        <header>
-          <h2>{title}</h2>
-          <button onClick={onClose} aria-label="Close">
-            ×
-          </button>
-        </header>
-        {children}
-      </aside>
-    </div>
+    </Modal>
   );
 }
 
 export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
   const [employee, setEmployee] = useState(null);
+  const [socialInsurance, setSocialInsurance] = useState(null);
+  const [socialInsuranceError, setSocialInsuranceError] = useState("");
   const requestId = useRef(0);
   const lookup = useLookups(token, !!employee);
   const profileSection = () =>
@@ -1473,7 +1585,6 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
     "overview";
   const [tab, setTab] = useState(profileSection);
   const [editor, setEditor] = useState(null);
-  const [renew, setRenew] = useState(false);
   const [resign, setResign] = useState(false);
   const [busy, setBusy] = useState(false);
   const directoryReturn = profileDirectoryContext();
@@ -1501,6 +1612,14 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
     };
   }, [load]);
   useEffect(() => {
+    if (!capabilities.includes("employees.documents.view")) return;
+    let active = true;
+    const refreshSocialInsurance = () => socialInsuranceApi.get(id, token).then((record) => { if (active) { setSocialInsurance(record); setSocialInsuranceError(""); } }).catch((e) => { if (active) setSocialInsuranceError(e.message || "Couldn’t load Social Insurance summary."); });
+    refreshSocialInsurance();
+    const unsubscribe = subscribeSocialInsuranceInvalidation((employeeId) => { if (employeeId === id) refreshSocialInsurance(); });
+    return () => { active = false; unsubscribe(); };
+  }, [id, token, capabilities]);
+  useEffect(() => {
     const syncSection = () => setTab(profileSection());
     addEventListener("hashchange", syncSection);
     return () => removeEventListener("hashchange", syncSection);
@@ -1508,7 +1627,12 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
   useEmployeeInvalidation(
     id,
     token,
-    useCallback(() => load(false), [load]),
+    useCallback(() => {
+      load(false);
+      if (capabilities.includes("employees.documents.view")) {
+        socialInsuranceApi.get(id, token).then(setSocialInsurance).catch((error) => setSocialInsuranceError(error.message || "Couldn’t refresh Social Insurance."));
+      }
+    }, [load, id, token, capabilities]),
   );
   if (!employee)
     return (
@@ -1578,6 +1702,10 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
   const insurance = employee.insurance || {};
   const comp =
     calculated.comprehensive_health_deduction || insurance.comprehensive_health;
+  const contractHistory = [...(employee.contract_history || [])].sort((left, right) =>
+    String(right.renewal_signing_date || "").localeCompare(String(left.renewal_signing_date || "")),
+  );
+  const latestRenewal = contractHistory[0] || null;
   const profileGroups = [
     { label: "Overview", items: ["overview"] },
     { label: "Personal", items: tabs.filter((item) => ["personal", "family"].includes(item)) },
@@ -1644,19 +1772,13 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
                 Edit Employee
               </button>
             )}
-            {employee.employee_status === "active" && employee.work && capabilities.includes("employees.work.edit") && (
-              <button className="secondary" onClick={() => setRenew(true)}>
-                <RefreshCw size={15} />
-                Renew Contract
-              </button>
-            )}
             {employee.employee_status === "active" &&
               capabilities.includes("employees.edit") && (
                 <button
                   className="text-button danger-text"
                   onClick={() => setResign(true)}
                 >
-                  Mark as Resigned / Inactive
+                  Record resignation
                 </button>
               )}
             </div>
@@ -1674,7 +1796,7 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
         <div>
           <div className="overview-grid">
             <Info label="Employee ID" value={`#${employee.employee_number}`} />
-            <Info label="Status" value={employee.employee_status} />
+            <Info label="Status" value={employeeStatusLabel(employee.employee_status)} />
             <Info label="Position" value={employee.work?.position?.name} />
             <Info label="Department" value={employee.work?.department?.name} />
             <Info
@@ -1706,6 +1828,25 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
               }
             />
           </div>
+          {capabilities.includes("employees.documents.view") && <section className="profile-social-insurance">
+            <header><h2>Social Insurance</h2><button className="secondary" onClick={() => { const params = new URLSearchParams(location.hash.split("?")[1] || ""); params.set("employee_id", id); params.set("return_to", location.hash.slice(1)); go(`social-insurance?${params}`); }}>Manage Social Insurance</button></header>
+            {socialInsuranceError ? <div className="employee-notice danger">{socialInsuranceError}<button className="text-button" onClick={() => socialInsuranceApi.get(id, token).then(setSocialInsurance).catch((e)=>setSocialInsuranceError(e.message))}>Retry</button></div> : !socialInsurance ? <p className="muted">Loading Social Insurance…</p> : <div className="profile-social-insurance-grid">
+              {employee.employee_status === "active" ? <>
+                <Info label="Installation date · تاريخ التثبيت" value={date(socialInsurance.form_1_installation_date)} />
+                <Info label="Social Insurance Number" value={socialInsurance.form_1_social_insurance_number || "—"} />
+                <Info label="Incoming number / date" value={[socialInsurance.form_1_incoming_number, date(socialInsurance.form_1_incoming_date)].filter((value) => value && value !== "—").join(" · ") || "—"} />
+                <Info label="Insurance status" value={socialInsurance.form_1_insurance_status_text || "—"} />
+                <Info label="Notes" value={socialInsurance.form_1_notes || "—"} />
+              </> : employee.employee_status === "resigned" ? <>
+                <Info label="Termination date · تاريخ الفصل" value={date(socialInsurance.form_6_termination_date)} />
+                <Info label="Termination reason · سبب الفصل" value={socialInsurance.form_6_termination_reason || "—"} />
+                <Info label="Social Insurance Number" value={socialInsurance.form_6_social_insurance_number || "—"} />
+                <Info label="Incoming number / date" value={[socialInsurance.form_6_incoming_number, date(socialInsurance.form_6_incoming_date)].filter((value) => value && value !== "—").join(" · ") || "—"} />
+                <Info label="Insurance status" value={socialInsurance.form_6_insurance_status_text || "—"} />
+                <Info label="Notes" value={socialInsurance.form_6_notes || "—"} />
+              </> : <p className="muted">Social Insurance forms are available for active or resigned employees.</p>}
+            </div>}
+          </section>}
           {employee.notifications?.length > 0 && (
             <Notice kind="warning">
               {employee.notifications.length} backend-generated notification
@@ -1734,9 +1875,7 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
               ["Governorate", employee.personal.governorate?.name],
               [
                 "Classification",
-                employee.employee_classification === "five_percent"
-                  ? "5%"
-                  : "Standard",
+                employeeClassificationLabel(employee.employee_classification),
               ],
               ["Address", employee.personal.address],
             ].map(([a, b]) => (
@@ -1824,20 +1963,6 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
         <DetailSection title="Insurance & eligibility">
           <div className="detail-grid">
             <Info
-              label="Social Insurance"
-              value={
-                insurance.social_insurance_active ? "Active" : "Not active"
-              }
-            />
-            <Info
-              label="Form 1 Incoming Number"
-              value={insurance.form_1_incoming_number}
-            />
-            <Info
-              label="Form 1 Incoming Date"
-              value={date(insurance.form_1_incoming_date)}
-            />
-            <Info
               label="Form 1 Deadline"
               value={date(insurance.form_1_deadline_date)}
             />
@@ -1897,9 +2022,7 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
             <Info
               label="Employee Classification"
               value={
-                employee.employee_classification === "five_percent"
-                  ? "5%"
-                  : "Standard"
+                employeeClassificationLabel(employee.employee_classification)
               }
             />
           </div>
@@ -1951,22 +2074,28 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
       )}
       {tab === "contracts" && (
         <DetailSection title="Contract History">
-          <RecordList
-            title=""
-            records={employee.contract_history}
-            fields={(x) => (
-              <>
-                <strong>
-                  {date(x.renewal_signing_date)} →{" "}
-                  {date(x.renewal_expiration_date)}
-                </strong>
-                <span>
-                  Previous: {date(x.previous_contract_signing_date)} →{" "}
-                  {date(x.previous_contract_expiration_date)}
-                </span>
-              </>
+          <div className="contract-history-grid">
+            <ContractHistoryRecord
+              title="Current contract"
+              signingDate={latestRenewal?.renewal_signing_date || employee.work?.contract_signing_date}
+              expirationDate={latestRenewal?.renewal_expiration_date || employee.work?.contract_expiration_date}
+              renewedOn={latestRenewal?.renewal_signing_date || employee.work?.contract_signing_date}
+              current
+            />
+            {latestRenewal ? (
+              <ContractHistoryRecord
+                title="Previous contract"
+                signingDate={latestRenewal.previous_contract_signing_date}
+                expirationDate={latestRenewal.previous_contract_expiration_date}
+                renewedOn={latestRenewal.previous_contract_signing_date}
+              />
+            ) : (
+              <article className="contract-history-record contract-history-empty">
+                <h3>Previous contract</h3>
+                <p>No previous contract recorded.</p>
+              </article>
             )}
-          />
+          </div>
         </DetailSection>
       )}
       {tab === "notifications" && (
@@ -1979,19 +2108,9 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
             </button>
           }
         >
-          <RecordList
-            title=""
-            records={employee.notifications}
-            fields={(x) => (
-              <>
-                <strong>{x.notification_type.replaceAll("_", " ")}</strong>
-                <span>
-                  Due {date(x.due_date)} · {x.status} ·{" "}
-                  {x.reminder_threshold_days} day reminder
-                </span>
-                <small>{x.reference_key}</small>
-              </>
-            )}
+          <EmployeeNotificationList
+            notifications={employee.notifications}
+            onAction={(section) => selectTab(section)}
           />
         </DetailSection>
       )}
@@ -2040,54 +2159,17 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
           }}
         />
       )}
-      {renew && (
-        <RenewDialog
-          employee={employee}
-          onClose={() => setRenew(false)}
-          save={async (body) => {
-            setBusy(true);
-            try {
-              await employeesApi.renewContract(id, body, token);
-              invalidateDashboardData();
-              setRenew(false);
-              load();
-              toast("Contract renewed.", "success");
-            } catch (e) {
-              toast(e.message, "error");
-            } finally {
-              setBusy(false);
-            }
-          }}
-          busy={busy}
-        />
-      )}
       {resign && (
-        <ResignDialog
+        <RecordResignationDrawer
+          employeeId={id}
+          employee={employee}
+          token={token}
+          toast={toast}
           reasons={lookup?.["leaving-reasons"] || []}
-          busy={busy}
           onClose={() => setResign(false)}
-          save={async (body) => {
-            setBusy(true);
-            try {
-              await employeesApi.updateEmployeeStatus(
-                id,
-                { ...body, expected_updated_at: employee.updated_at },
-                token,
-              );
-              invalidateDashboardData();
-              setResign(false);
-              load();
-              toast("Employee status updated.", "success");
-            } catch (e) {
-              if (e.status === 409 && e.code === "employee_conflict")
-                toast(
-                  "Another user updated this employee. Refresh the latest data before changing status.",
-                  "error",
-                );
-              else toast(e.message, "error");
-            } finally {
-              setBusy(false);
-            }
+          onSuccess={() => {
+            setResign(false);
+            load(false);
           }}
         />
       )}
@@ -2139,6 +2221,8 @@ function EmployeeDocuments({ employeeId, token, toast, canEdit, canReview }) {
   const [types, setTypes] = useState([]);
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [rejectingDoc, setRejectingDoc] = useState(null);
+  const [rejectionReason, setRejectionReason] = useState("");
   const load = useCallback(async () => {
     try {
       const [result, documentTypes] = await Promise.all([
@@ -2153,13 +2237,17 @@ function EmployeeDocuments({ employeeId, token, toast, canEdit, canReview }) {
     }
   }, [employeeId, token, toast]);
   useEffect(() => { load(); }, [load]);
-  const updateStatus = async (documentId, status) => {
-    const rejectionReason = status === "rejected" ? window.prompt("Why is this document rejected?") : undefined;
-    if (status === "rejected" && !rejectionReason?.trim()) return;
+  const updateStatus = async (documentId, status, rejection = undefined) => {
+    if (status === "rejected" && !rejection) {
+      setRejectingDoc(documentId);
+      setRejectionReason("");
+      return;
+    }
     setBusy(true);
     try {
-      await documentsApi.update(documentId, { status, ...(rejectionReason ? { rejection_reason: rejectionReason } : {}) }, token);
+      await documentsApi.update(documentId, { status, ...(rejection ? { rejection_reason: rejection } : {}) }, token);
       await load();
+      setRejectingDoc(null);
       toast(`Document marked ${status}.`, "success");
     } catch (error) { toast(error.message, "error"); }
     finally { setBusy(false); }
@@ -2197,6 +2285,12 @@ function EmployeeDocuments({ employeeId, token, toast, canEdit, canReview }) {
         </div>
       )}
       {adding && <DocumentEditor employeeId={employeeId} token={token} types={types} busy={busy} setBusy={setBusy} onClose={() => setAdding(false)} onSaved={async () => { setAdding(false); await load(); }} toast={toast} />}
+      {rejectingDoc && <Modal title="Reject document" size="small" onClose={() => !busy && setRejectingDoc(null)} closeOnBackdrop={!rejectionReason.trim()} canDismiss={!busy && !rejectionReason.trim()}>
+        <form onSubmit={(event) => { event.preventDefault(); if (rejectionReason.trim()) updateStatus(rejectingDoc, "rejected", rejectionReason.trim()); }}>
+          <label>Reason for rejection<textarea required maxLength={1000} rows="4" value={rejectionReason} onChange={(event) => setRejectionReason(event.target.value)} /></label>
+          <footer className="modal-actions"><button type="button" className="secondary" disabled={busy} onClick={() => setRejectingDoc(null)}>Cancel</button><button className="danger" disabled={busy || !rejectionReason.trim()}>{busy ? "Saving…" : "Reject document"}</button></footer>
+        </form>
+      </Modal>}
     </DetailSection>
   );
 }
@@ -2257,6 +2351,7 @@ function DocumentLoadingRows() {
 
 function DocumentEditor({ employeeId, token, types, busy, setBusy, onClose, onSaved, toast }) {
   const [form, setForm] = useState({ document_type_id: "", reference_number: "", issued_on: "", expires_on: "", notes: "", file: null });
+  const dirty = Boolean(form.document_type_id || form.reference_number || form.issued_on || form.expires_on || form.notes || form.file);
   const selectedType = types.find((item) => String(item.id) === String(form.document_type_id));
   const save = async (event) => {
     event.preventDefault();
@@ -2290,17 +2385,17 @@ function DocumentEditor({ employeeId, token, types, busy, setBusy, onClose, onSa
       toast(error.message || "Document could not be saved.", "error");
     } finally { setBusy(false); }
   };
-  return <Drawer title="Add document" onClose={onClose}>
-    <form onSubmit={save}>
+  return <Modal title="Add document" size="medium" onClose={onClose} closeOnBackdrop={!dirty} canDismiss={!busy && !dirty}>
+    <form className="modal-grid" onSubmit={save}>
       <label>Document type<select required value={form.document_type_id} onChange={(event) => setForm({ ...form, document_type_id: event.target.value })}><option value="">Choose document type</option>{types.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       <label>Reference number<input value={form.reference_number} onChange={(event) => setForm({ ...form, reference_number: event.target.value })} /></label>
       <label>Issued on<input type="date" value={form.issued_on} onChange={(event) => setForm({ ...form, issued_on: event.target.value })} /></label>
       <label>Expires on {selectedType?.requires_expiry ? <b aria-label="Required">*</b> : ""}<input required={selectedType?.requires_expiry} type="date" value={form.expires_on} onChange={(event) => setForm({ ...form, expires_on: event.target.value })} /></label>
-      <label>Private file <input type="file" accept="application/pdf,image/jpeg,image/png" onChange={(event) => setForm({ ...form, file: event.target.files?.[0] || null })} /><small>PDF, JPG, or PNG; maximum 10 MB.</small></label>
-      <label>Notes<textarea rows="3" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} /></label>
-      <footer className="drawer-actions"><button type="button" className="secondary" onClick={onClose} disabled={busy}>Cancel</button><button className="primary" disabled={busy}>{busy ? "Saving…" : "Record document"}</button></footer>
+      <label className="modal-full-width">Private file <input type="file" accept="application/pdf,image/jpeg,image/png" onChange={(event) => setForm({ ...form, file: event.target.files?.[0] || null })} /><small>PDF, JPG, or PNG; maximum 10 MB.</small></label>
+      <label className="modal-full-width">Notes<textarea rows="3" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} /></label>
+      <footer className="modal-actions"><button type="button" className="secondary" onClick={onClose} disabled={busy}>Cancel</button><button className="primary" disabled={busy}>{busy ? "Saving…" : "Record document"}</button></footer>
     </form>
-  </Drawer>;
+  </Modal>;
 }
 function LicenseEditor({
   item,
@@ -2311,15 +2406,13 @@ function LicenseEditor({
   refreshLatest,
   keepEditing,
 }) {
+  const initialForm = item
+    ? { license_type_id: item.license_type_id, release_date: item.release_date, expiry_date: item.expiry_date }
+    : { license_type_id: "", release_date: "", expiry_date: "" };
   const [form, setForm] = useState(
-    item
-      ? {
-          license_type_id: item.license_type_id,
-          release_date: item.release_date,
-          expiry_date: item.expiry_date,
-        }
-      : { license_type_id: "", release_date: "", expiry_date: "" },
+    initialForm,
   );
+  const dirty = Object.keys(initialForm).some((key) => (form[key] ?? "") !== (initialForm[key] ?? ""));
   const refresh = async () => {
     const latest = await refreshLatest("license", item.id);
     if (latest)
@@ -2330,7 +2423,7 @@ function LicenseEditor({
       });
   };
   return (
-    <Drawer title={`${item ? "Edit" : "Add"} License`} onClose={onClose}>
+    <Modal title={`${item ? "Edit" : "Add"} License`} size="small" onClose={onClose} closeOnBackdrop={!dirty} canDismiss={!dirty}>
       {conflict && (
         <Notice kind="danger">
           This record was updated by another user.
@@ -2344,7 +2437,7 @@ function LicenseEditor({
           </span>
         </Notice>
       )}
-      <form
+      <form className="modal-grid"
         onSubmit={(e) => {
           e.preventDefault();
           if (form.expiry_date < form.release_date) return;
@@ -2380,52 +2473,20 @@ function LicenseEditor({
           required
           hint="Must be on or after release date"
         />
-        <button className="primary wide">Save License</button>
+        <footer className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary">Save License</button></footer>
       </form>
-    </Drawer>
+    </Modal>
   );
 }
-function RenewDialog({ employee, onClose, save, busy }) {
-  const [value, setValue] = useState("");
-  return (
-    <Drawer title="Renew Contract" onClose={onClose}>
-      <div className="renew-context">
-        <Info
-          label="Current Contract Signing"
-          value={date(employee.work.contract_signing_date)}
-        />
-        <Info
-          label="Current Expiration"
-          value={date(employee.work.contract_expiration_date)}
-        />
-      </div>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          save({ renewal_signing_date: value });
-        }}
-      >
-        <label>
-          Renewal Signing Date
-          <input
-            required
-            type="date"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-          />
-        </label>
-        <Notice>
-          The backend will calculate the new expiration and reject duplicate
-          renewal dates.
-        </Notice>
-        <button className="primary wide" disabled={busy}>
-          {busy ? "Renewing…" : "Renew Contract"}
-        </button>
-      </form>
-    </Drawer>
-  );
-}
-function ResignDialog({ reasons, onClose, save, busy }) {
+export function RecordResignationDrawer({
+  employeeId,
+  employee: initialEmployee,
+  token,
+  toast,
+  reasons,
+  onClose,
+  onSuccess,
+}) {
   const [form, setForm] = useState({
     employee_status: "resigned",
     leaving_date: "",
@@ -2436,33 +2497,163 @@ function ResignDialog({ reasons, onClose, save, busy }) {
     form_6_incoming_date: "",
     form_6_reason: "",
   });
+  const [search, setSearch] = useState("");
+  const [matches, setMatches] = useState([]);
+  const [selectedId, setSelectedId] = useState(employeeId || "");
+  const [employee, setEmployee] = useState(initialEmployee || null);
+  const [searching, setSearching] = useState(false);
+  const [loadingEmployee, setLoadingEmployee] = useState(!!employeeId);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [showDetails, setShowDetails] = useState(false);
+  const [searchAttempt, setSearchAttempt] = useState(0);
+  const searchRequest = useRef(0);
+  const dirty = Boolean(form.leaving_date || form.leaving_reason_id || form.leaving_comment || form.annual_days_settled || form.form_6_incoming_number || form.form_6_incoming_date || form.form_6_reason);
+
+  useEffect(() => {
+    if (employeeId) return undefined;
+    const term = search.trim();
+    if (!term) {
+      searchRequest.current += 1;
+      setMatches([]);
+      setError("");
+      return undefined;
+    }
+    const controller = new AbortController();
+    const request = ++searchRequest.current;
+    const timer = setTimeout(() => {
+      setSearching(true);
+      employeesApi
+        .listEmployees({ search: term, status: "active", page: 1, pageSize: 25 }, token, controller.signal)
+        .then((result) => {
+          if (request === searchRequest.current) setMatches(result.data || []);
+        })
+        .catch((requestError) => {
+          if (requestError.name !== "AbortError" && request === searchRequest.current) {
+            setMatches([]);
+            setError(requestError.message || "Unable to search active employees. Please try again.");
+          }
+        })
+        .finally(() => {
+          if (request === searchRequest.current) setSearching(false);
+        });
+    }, 250);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [employeeId, search, token, searchAttempt]);
+
+  useEffect(() => {
+    if (!selectedId) return undefined;
+    let active = true;
+    setLoadingEmployee(true);
+    setError("");
+    employeesApi
+      .getEmployee(selectedId, token)
+      .then((result) => {
+        if (active) setEmployee(result);
+      })
+      .catch((requestError) => {
+        if (active) {
+          setEmployee(null);
+          setError(requestError.message || "Unable to load the current employee record.");
+        }
+      })
+      .finally(() => active && setLoadingEmployee(false));
+    return () => { active = false; };
+  }, [selectedId, token]);
+
+  const identity = employee
+    ? {
+        name: employee.personal?.arabic_full_name || employee.personal?.english_full_name || "Employee",
+        english: employee.personal?.english_full_name,
+        number: employee.employee_number,
+        department: employee.work?.department?.name,
+        position: employee.work?.position?.name,
+      }
+    : null;
+  const chooseEmployee = (candidate) => {
+    setSelectedId(candidate.id);
+    setLoadingEmployee(true);
+    setError("");
+    setSearch(candidate.arabic_full_name || candidate.english_full_name || `Employee #${candidate.employee_number}`);
+    setMatches([]);
+  };
+  const submit = async (event) => {
+    event.preventDefault();
+    if (!employee || employee.employee_status !== "active") {
+      setError("Choose an active employee before recording a resignation.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await employeesApi.updateEmployeeStatus(
+        employee.id,
+        {
+          ...form,
+          employee_status: "resigned",
+          leaving_reason_id: Number(form.leaving_reason_id),
+          annual_days_settled: form.annual_days_settled === "" ? null : Number(form.annual_days_settled),
+          expected_updated_at: employee.updated_at,
+        },
+        token,
+      );
+      invalidateDashboardData();
+      toast("Resignation recorded.", "success");
+      onSuccess?.();
+    } catch (requestError) {
+      if (requestError.status === 409 && requestError.code === "employee_conflict") {
+        setError("Another user updated this employee. Reopen the record and try again.");
+      } else {
+        setError(requestError.message || "Unable to record the resignation.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
-    <Drawer title="Mark as Resigned / Inactive" onClose={onClose}>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          save({
-            ...form,
-            leaving_reason_id: Number(form.leaving_reason_id),
-            annual_days_settled:
-              form.annual_days_settled === ""
-                ? null
-                : Number(form.annual_days_settled),
-          });
-        }}
-      >
-        <label>
-          Status
-          <select
-            value={form.employee_status}
-            onChange={(e) =>
-              setForm({ ...form, employee_status: e.target.value })
-            }
-          >
-            <option value="resigned">Resigned</option>
-            <option value="inactive">Inactive</option>
-          </select>
-        </label>
+    <Modal title="Record resignation" size="medium" onClose={onClose} closeOnBackdrop={!dirty} canDismiss={!busy && !dirty}>
+      <form className="modal-grid" onSubmit={submit}>
+        {!employeeId && (
+          <label className="resignation-employee-search modal-full-width">
+            Employee <b className="required">*</b>
+            <input
+              autoFocus
+              value={search}
+              onChange={(event) => {
+                setSearch(event.target.value);
+                setSelectedId("");
+                setEmployee(null);
+                setError("");
+              }}
+              placeholder="Search active employees by ID or name"
+              aria-describedby="resignation-search-help"
+            />
+            <small id="resignation-search-help">Only active employees can be selected.</small>
+            {searching && <small>Searching…</small>}
+            {matches.length > 0 && !selectedId && (
+              <div className="resignation-search-results" role="listbox" aria-label="Active employee results">
+                {matches.map((candidate) => (
+                  <button type="button" key={candidate.id} role="option" onClick={() => chooseEmployee(candidate)}>
+                    <span dir="auto">{candidate.arabic_full_name || candidate.english_full_name}</span>
+                    <small>#{candidate.employee_number} · {candidate.department?.name || "No department"}{candidate.position?.name ? ` · ${candidate.position.name}` : ""}</small>
+                  </button>
+                ))}
+              </div>
+            )}
+          </label>
+        )}
+        {(identity || loadingEmployee) && (
+          <div className="resignation-employee-summary modal-full-width" aria-live="polite">
+            {loadingEmployee ? "Loading current employee record…" : <>
+              <strong dir="auto">{identity.name}</strong>
+              <small>{identity.english && identity.english !== identity.name ? `${identity.english} · ` : ""}#{identity.number}{identity.department ? ` · ${identity.department}` : ""}{identity.position ? ` · ${identity.position}` : ""}</small>
+            </>}
+          </div>
+        )}
+        {error && <div className="employee-notice danger modal-full-width" role="alert">{error}{!employee && search.trim() && <span className="notice-actions"><button className="secondary" type="button" onClick={() => setSearchAttempt((attempt) => attempt + 1)}>Try again</button></span>}</div>}
         <Field
           label="Leaving Date"
           name="leaving_date"
@@ -2479,7 +2670,7 @@ function ResignDialog({ reasons, onClose, save, busy }) {
           options={reasons}
           required
         />
-        <label>
+        <label className="modal-full-width">
           Leaving Comment
           <textarea
             value={form.leaving_comment}
@@ -2488,39 +2679,25 @@ function ResignDialog({ reasons, onClose, save, busy }) {
             }
           />
         </label>
-        <Field
-          label="Annual Days Settled"
-          name="annual_days_settled"
-          form={form}
-          setForm={setForm}
-          type="number"
-        />
-        <Field
-          label="Form 6 Incoming Number"
-          name="form_6_incoming_number"
-          form={form}
-          setForm={setForm}
-        />
-        <Field
-          label="Form 6 Incoming Date"
-          name="form_6_incoming_date"
-          form={form}
-          setForm={setForm}
-          type="date"
-        />
-        <label>
-          Form 6 Reason
-          <textarea
-            value={form.form_6_reason}
-            onChange={(e) =>
-              setForm({ ...form, form_6_reason: e.target.value })
-            }
-          />
-        </label>
-        <button className="danger wide" disabled={busy}>
-          {busy ? "Updating…" : "Confirm status change"}
+        <button className="text-button resignation-details-toggle modal-full-width" type="button" onClick={() => setShowDetails((value) => !value)} aria-expanded={showDetails}>
+          {showDetails ? "Hide additional exit details" : "Additional exit details"}
         </button>
+        {showDetails && <div className="resignation-additional-details modal-grid modal-full-width">
+          <Field label="Annual Days Settled" name="annual_days_settled" form={form} setForm={setForm} type="number" />
+          <Field label="Form 6 Incoming Number" name="form_6_incoming_number" form={form} setForm={setForm} />
+          <Field label="Form 6 Incoming Date" name="form_6_incoming_date" form={form} setForm={setForm} type="date" />
+          <label className="modal-full-width">
+            Form 6 Reason
+            <textarea value={form.form_6_reason} onChange={(e) => setForm({ ...form, form_6_reason: e.target.value })} />
+          </label>
+        </div>}
+        <footer className="modal-actions">
+          <button className="secondary" type="button" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="danger" disabled={busy || loadingEmployee || !employee}>
+            {busy ? "Recording…" : "Record resignation"}
+          </button>
+        </footer>
       </form>
-    </Drawer>
+    </Modal>
   );
 }

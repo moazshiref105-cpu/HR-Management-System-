@@ -144,8 +144,8 @@ export const capabilitiesApi = {
 
 export const employeesApi = {
   listEmployees: (options, t, signal) => {
-    const { page = 1, pageSize = 25, search, status, employee_status, department, team, position, project, governorate, queue, from, to, sort = "employee_number", direction = "asc" } = options || {}
-    const query = new URLSearchParams(Object.entries({ page, page_size: pageSize, search, status: status ?? employee_status, department, team, position, project, governorate, queue, from, to, sort, direction }).filter(([, value]) => value !== "" && value != null)).toString()
+    const { page = 1, pageSize = 25, search, status, employee_status, classification, employee_classification, department, team, position, project, governorate, queue, from, to, sort = "employee_number", direction = "asc" } = options || {}
+    const query = new URLSearchParams(Object.entries({ page, page_size: pageSize, search, status: status ?? employee_status, classification: classification ?? employee_classification, department, team, position, project, governorate, queue, from, to, sort, direction }).filter(([, value]) => value !== "" && value != null)).toString()
     const path = `/api/employees${query ? `?${query}` : ""}`
     return api(path, t, { signal })
   },
@@ -164,6 +164,26 @@ export const employeesApi = {
   updateLicense: (id, licenseId, body, t) => api(`/api/employees/${id}/licenses/${licenseId}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
   renewContract: (id, body, t) => api(`/api/employees/${id}/contract-renewals`, t, { method: 'POST', body: JSON.stringify(body) }),
   refreshEmployeeNotifications: (id, t) => api(`/api/employees/${id}/notifications`, t, { method: 'POST' }),
+}
+
+export const contractRenewalsApi = {
+  lists: (t) => api('/api/contracts/renewals', t),
+  create: (body, t) => api('/api/contracts/renewals', t, { method: 'POST', body: JSON.stringify(body) }),
+  items: (id, options, t) => {
+    const query = new URLSearchParams(Object.entries(options || {}).filter(([, value]) => value !== '' && value != null)).toString()
+    return api(`/api/contracts/renewals/${id}${query ? `?${query}` : ''}`, t)
+  },
+  receipts: (id, body, t) => api(`/api/contracts/renewals/${id}/receipts`, t, { method: 'POST', body: JSON.stringify(body) }),
+}
+
+const socialInsuranceListeners = new Set()
+export const subscribeSocialInsuranceInvalidation = (listener) => { socialInsuranceListeners.add(listener); return () => socialInsuranceListeners.delete(listener) }
+export const socialInsuranceApi = {
+  list: (options, token) => { const query = new URLSearchParams(Object.entries(options || {}).filter(([, value]) => value !== '' && value != null)).toString(); return api(`/api/social-insurance${query ? `?${query}` : ''}`, token) },
+  options: (token) => api('/api/social-insurance/options', token),
+  get: (id, token) => api(`/api/social-insurance/${id}`, token),
+  update: async (id, body, token) => { const result = await api(`/api/social-insurance/${id}`, token, { method: 'PATCH', body: JSON.stringify(body) }); socialInsuranceListeners.forEach((listener) => listener(id)); invalidateDashboardData(); return result },
+  audit: (id, token) => api(`/api/social-insurance/${id}?view=audit`, token),
 }
 
 export const documentsApi = {

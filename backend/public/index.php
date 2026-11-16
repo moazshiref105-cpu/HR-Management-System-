@@ -20,11 +20,13 @@ use Hms\Backend\SetupApi;
 use Hms\Backend\EmployeeApi;
 use Hms\Backend\DashboardApi;
 use Hms\Backend\DocumentApi;
+use Hms\Backend\ContractRenewalApi;
+use Hms\Backend\SocialInsuranceApi;
 use Hms\Backend\HttpException;
 
 try {
     $path = trim((string) parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH), '/');
-    $api = str_starts_with($path, 'api/dashboard') ? DashboardApi::fromEnvironment() : (str_starts_with($path, 'api/employees') ? EmployeeApi::fromEnvironment() : (str_starts_with($path, 'api/documents') ? DocumentApi::fromEnvironment() : SetupApi::fromEnvironment()));
+    $api = str_starts_with($path, 'api/dashboard') ? DashboardApi::fromEnvironment() : (str_starts_with($path, 'api/employees') ? EmployeeApi::fromEnvironment() : (str_starts_with($path, 'api/social-insurance') ? SocialInsuranceApi::fromEnvironment() : (str_starts_with($path, 'api/documents') ? DocumentApi::fromEnvironment() : (str_starts_with($path, 'api/contracts/renewals') ? ContractRenewalApi::fromEnvironment() : SetupApi::fromEnvironment()))));
     $api->dispatch($_SERVER['REQUEST_METHOD'] ?? 'GET', $_SERVER['REQUEST_URI'] ?? '/');
 } catch (Throwable $exception) {
     $status = $exception instanceof HttpException ? $exception->status : ($exception instanceof RuntimeException ? 400 : 500);

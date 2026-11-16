@@ -1,0 +1,11 @@
+{
+  "employee_statuses": ["active", "resigned"],
+  "employee_classifications": [
+    { "value": "standard", "label": "Standard" },
+    { "value": "5_percent", "label": "5%", "accepted_aliases": ["5%", "five_percent"] }
+  ],
+  "directory_defaults": {
+    "status": "active",
+    "classification": "all"
+  }
+}

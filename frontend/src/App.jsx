@@ -25,9 +25,12 @@ import logo from "../assets/images/jushi-logo.png";
 import { authConfigured, LOCAL_DEV_ACCESS_TOKEN, localDevAuthBypass, supabase } from "./auth";
 import { capabilitiesApi, dashboardApi, employeesApi, invalidateCapabilitiesCache, invalidateDashboardData, invalidateEmployeeLookupCache, setupApi } from "./api";
 import { DocumentsCompliance, EmployeeDetail, EmployeeForm, EmployeesList } from "./Employees";
+import { ContractRenewals } from "./ContractRenewals";
+import { SocialInsurance } from "./SocialInsurance";
 import { workQueueDefinitions, workQueueHash } from "./workQueues";
 import { Dashboard } from "./Dashboard";
 import { DataQuality, Lifecycle } from "./PeopleOperations";
+import { Modal } from "./Modal";
 
 const groups = [
   {
@@ -364,9 +367,11 @@ function Login({ onSession }) {
 
 function Sidebar({ session, page, routeHash, setPage, logout, activePanel, setActivePanel, isOpen, onOpen, close }) {
   const user = session.user;
+  const railRef = useRef(null);
+  const panelRef = useRef(null);
   const [openSetupGroup, setOpenSetupGroup] = useState("Organization");
   const [openPeopleGroup, setOpenPeopleGroup] = useState("");
-  const peopleRoutes = ["people", "employees", "work-queues", "lifecycle", "documents", "data-quality"];
+  const peopleRoutes = ["people", "employees", "work-queues", "contracts", "lifecycle", "documents", "data-quality", "social-insurance"];
   const setupRoutes = [
     "home", "users", "roles", "insurance", "departments", "teams", "positions", "projects",
     "governorates", "religions", "marital-statuses", "diplomas", "leaving-reasons", "license-types",
@@ -377,19 +382,23 @@ function Sidebar({ session, page, routeHash, setPage, logout, activePanel, setAc
   const isSetup = employeeLookupResources.has(page) || setupRoutes.some((route) => page === route || page.startsWith(`${route}/`));
   const routeParams = new URLSearchParams(routeHash.split("?")[1] || "");
   const dashboardView = routeParams.get("view") || "overview";
+  const socialInsuranceView = routeParams.get("view") || "all";
   const returnTo = routeParams.get("return_to");
   const returnParams = new URLSearchParams((returnTo || "").split("?")[1] || "");
   const hasQueueContext = Boolean(routeParams.get("queue") || returnParams.get("queue"));
   const currentQueue = routeParams.get("queue") || returnParams.get("queue") || "";
   const activeModule = isDashboard ? "analytics" : isPeople ? "people" : isSetup ? "setup" : null;
-  const railActive = activePanel || activeModule;
+  // Selection reflects the current route, not whichever module panel happens
+  // to be open. This keeps People selected for employee/profile/work-queue
+  // routes and prevents SetUp from appearing selected by mistake.
+  const railActive = activeModule;
   const setupGroupForPage = page === "users" || page === "roles" ? "Access & Security" : page === "insurance" ? "Insurance" : ["religions", "marital-statuses", "diplomas", "leaving-reasons", "license-types", "shift-types", "banks"].includes(page) ? "Employee Reference Data" : "Organization";
   const togglePanel = (panel) => {
     setActivePanel((current) => current === panel ? null : panel);
     if (panel === "people" && !isPeople) setPage("employees");
   };
   const iconForRoute = (route) => ({
-    dashboard: LayoutDashboard, employees: UsersRound, "work-queues": Clock3, documents: FileText,
+    dashboard: LayoutDashboard, employees: UsersRound, "work-queues": Clock3, "contracts/renewals": FileText, documents: FileText, "social-insurance": ShieldCheck,
     departments: Building2, teams: Network, positions: BriefcaseBusiness, projects: FolderKanban,
     governorates: MapPinned, religions: ShieldCheck, "marital-statuses": UsersRound, diplomas: GraduationCap,
     "leaving-reasons": SlidersHorizontal, "license-types": FileText, "shift-types": Clock3, banks: Landmark,
@@ -398,6 +407,15 @@ function Sidebar({ session, page, routeHash, setPage, logout, activePanel, setAc
   useEffect(() => {
     if (activePanel === "setup") setOpenSetupGroup(setupGroupForPage);
   }, [activePanel, page]);
+  useEffect(() => {
+    if (!activePanel || isOpen) return undefined;
+    const closeOnOutsidePointer = (event) => {
+      if (railRef.current?.contains(event.target) || panelRef.current?.contains(event.target)) return;
+      setActivePanel(null);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
+  }, [activePanel, isOpen, setActivePanel]);
   const navigate = (route) => {
     setPage(route);
     if (isOpen) close();
@@ -418,9 +436,8 @@ function Sidebar({ session, page, routeHash, setPage, logout, activePanel, setAc
     </section>
   );
   const queueGroups = [
-    ["Contracts & identity", [["contracts_expiring", "Expiring contracts"], ["contracts_expired", "Expired contracts"], ["identity_expiring", "Expiring identity documents"], ["identity_expired", "Expired identity documents"]]],
     ["Employment lifecycle", [["in_probation", "Employees in probation"], ["probation_due", "Probation due"]]],
-    ["Documents & administration", [["missing_form_1", "Missing Form 1"], ["missing_form_6", "Missing Form 6"], ["missing_bank", "Missing bank details"], ["due_soon", "Due soon"], ["overdue", "Overdue"]]],
+    ["Documents & administration", [["missing_bank", "Missing bank details"], ["due_soon", "Due soon"], ["overdue", "Overdue"]]],
     ["Benefits", [["medical_eligible", "Medical eligible"], ["life_eligible", "Life eligible"]]],
   ];
   return (
@@ -432,37 +449,37 @@ function Sidebar({ session, page, routeHash, setPage, logout, activePanel, setAc
       >
         ☰
       </button>
-      <aside className="navigation-rail" aria-label="Primary navigation">
+      <aside className="navigation-rail" ref={railRef} aria-label="Primary navigation">
         <div className="rail-brand"><img src={logo} alt="JUSHI" className="brand" /></div>
         <nav className="rail-nav">
-          <button type="button" title="Workforce Analytics" aria-label="Workforce Analytics" aria-pressed={activePanel === "analytics"} className={railActive === "analytics" ? "selected" : ""} onClick={() => togglePanel("analytics")}><LayoutDashboard size={19} /></button>
-          <button type="button" title="People" aria-label="People" aria-pressed={activePanel === "people"} className={railActive === "people" ? "selected" : ""} onClick={() => togglePanel("people")}><UsersRound size={19} /></button>
-          <button type="button" title="SetUp" aria-label="SetUp" aria-pressed={activePanel === "setup"} className={railActive === "setup" ? "selected" : ""} onClick={() => togglePanel("setup")}><Settings2 size={19} /></button>
+          <button type="button" title="Workforce Analytics" aria-label="Workforce Analytics" aria-controls="module-navigation-panel" aria-expanded={activePanel === "analytics"} className={railActive === "analytics" ? "selected" : ""} onClick={() => togglePanel("analytics")}><LayoutDashboard size={19} /></button>
+          <button type="button" title="People" aria-label="People" aria-controls="module-navigation-panel" aria-expanded={activePanel === "people"} className={railActive === "people" ? "selected" : ""} onClick={() => togglePanel("people")}><UsersRound size={19} /></button>
+          <button type="button" title="SetUp" aria-label="SetUp" aria-controls="module-navigation-panel" aria-expanded={activePanel === "setup"} className={railActive === "setup" ? "selected" : ""} onClick={() => togglePanel("setup")}><Settings2 size={19} /></button>
         </nav>
         <div className="rail-bottom">
           <span className="avatar" title={user.user_metadata?.full_name || user.email}>{initials(user.user_metadata?.full_name || user.email)}</span>
           <button type="button" className="rail-logout" title="Logout" aria-label="Logout" onClick={logout}><LogOut size={18} /></button>
         </div>
       </aside>
-      {activePanel && <button className={`navigation-dismiss${isOpen ? " mobile-open" : ""}`} aria-label="Close navigation panel" onClick={() => { setActivePanel(null); close(); }} />}
-      <aside className={`navigation-panel${activePanel ? " open" : ""}${isOpen ? " mobile-open" : ""}`} aria-label={activePanel === "analytics" ? "Workforce Analytics navigation" : activePanel === "people" ? "People navigation" : "SetUp navigation"}>
+      {activePanel && isOpen && <button className="navigation-dismiss mobile-open" aria-label="Close navigation panel" onClick={() => { setActivePanel(null); close(); }} />}
+      <aside id="module-navigation-panel" ref={panelRef} className={`navigation-panel${activePanel ? " open" : ""}${isOpen ? " mobile-open" : ""}`} aria-hidden={!activePanel} aria-label={activePanel === "analytics" ? "Workforce Analytics navigation" : activePanel === "people" ? "People navigation" : "SetUp navigation"}>
         {activePanel === "analytics" && <>
-          <header><p>Workspace</p><h2>Workforce Analytics</h2></header>
+          <header><div><p>Workspace</p><h2>Workforce Analytics</h2></div><button className="navigation-panel-close" onClick={() => { setActivePanel(null); close(); }} aria-label="Close navigation">×</button></header>
           <nav>{panelItem("dashboard?view=overview", "Overview", dashboardView === "overview")} {panelItem("dashboard?view=risks", "Operational Risks", dashboardView === "risks")} {panelItem("dashboard?view=explorer", "Workforce Explorer", dashboardView === "explorer")}</nav>
         </>}
         {activePanel === "people" && <>
-          <header><p>Module</p><h2>People</h2></header>
+          <header><div><p>Module</p><h2>People</h2></div><button className="navigation-panel-close" onClick={() => { setActivePanel(null); close(); }} aria-label="Close navigation">×</button></header>
           <nav className="people-panel-nav">
             {panelItem("employees", "Employees", (page === "employees" || page.startsWith("employees/")) && !hasQueueContext)}
-            <section className={`navigation-panel-group${openPeopleGroup === "queues" || hasQueueContext ? " open" : ""}`}>
-              <button type="button" className="navigation-panel-group-toggle" aria-expanded={openPeopleGroup === "queues" || hasQueueContext} onClick={() => setOpenPeopleGroup((current) => current === "queues" ? "" : "queues")}><span>Work Queues</span><ChevronRight size={15} /></button>
-              {(openPeopleGroup === "queues" || hasQueueContext) && <div className="navigation-panel-group-items queue-panel-items">{queueGroups.map(([group, items]) => <div key={group} className="queue-panel-group"><p>{group}</p>{items.filter(([key]) => workQueueDefinitions[key]).map(([key, label]) => panelItem(workQueueHash(key), label, currentQueue === key))}</div>)}</div>}
+            <section className={`navigation-panel-group${openPeopleGroup === "queues" || hasQueueContext || page.startsWith("contracts/") ? " open" : ""}`}>
+              <button type="button" className="navigation-panel-group-toggle" aria-expanded={openPeopleGroup === "queues" || hasQueueContext || page.startsWith("contracts/")} onClick={() => setOpenPeopleGroup((current) => current === "queues" ? "" : "queues")}><span>Work Queues</span><ChevronRight size={15} /></button>
+              {(openPeopleGroup === "queues" || hasQueueContext || page.startsWith("contracts/") || page === "social-insurance") && <div className="navigation-panel-group-items queue-panel-items">{panelItem("contracts/renewals", "Contracts", page === "contracts/renewals")}{panelItem("social-insurance?view=form_1_needs_attention", "Form 1 needs attention", page === "social-insurance" && socialInsuranceView === "form_1_needs_attention")}{panelItem("social-insurance?view=form_6_needs_attention", "Form 6 needs attention", page === "social-insurance" && socialInsuranceView === "form_6_needs_attention")}{panelItem("social-insurance?view=all", "All Social Insurance records", page === "social-insurance" && !socialInsuranceView.endsWith("_needs_attention"))}{queueGroups.map(([group, items]) => <div key={group} className="queue-panel-group"><p>{group}</p>{items.filter(([key]) => workQueueDefinitions[key]).map(([key, label]) => panelItem(workQueueHash(key), label, currentQueue === key))}</div>)}</div>}
             </section>
             {panelItem("documents", "Documents & Compliance", page === "documents")}
           </nav>
         </>}
         {activePanel === "setup" && <>
-          <header><p>Configuration</p><h2>SetUp</h2></header>
+          <header><div><p>Configuration</p><h2>SetUp</h2></div><button className="navigation-panel-close" onClick={() => { setActivePanel(null); close(); }} aria-label="Close navigation">×</button></header>
           <nav className="navigation-panel-groups">
             {setupGroup("Organization", ["departments", "teams", "positions", "projects", "governorates"].map((route) => panelItem(route, titleCase(route), page === route)))}
             {setupGroup("Employee Reference Data", ["religions", "marital-statuses", "diplomas", "leaving-reasons", "license-types", "shift-types", "banks"].map((route) => panelItem(route, titleCase(route), page === route)))}
@@ -477,16 +494,9 @@ function Sidebar({ session, page, routeHash, setPage, logout, activePanel, setAc
 
 function Confirm({ title, message, onConfirm, onClose, busy }) {
   return (
-    <div className="dialog-backdrop" role="presentation">
-      <section
-        className="dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="confirm-title"
-      >
-        <h2 id="confirm-title">{title}</h2>
+    <Modal title={title} onClose={onClose} size="small" className="confirm-modal">
         <p>{message}</p>
-        <div className="dialog-actions">
+        <div className="modal-actions">
           <button className="secondary" onClick={onClose}>
             Cancel
           </button>
@@ -494,8 +504,7 @@ function Confirm({ title, message, onConfirm, onClose, busy }) {
             {busy ? "Updating…" : "Deactivate"}
           </button>
         </div>
-      </section>
-    </div>
+    </Modal>
   );
 }
 
@@ -703,12 +712,16 @@ function MasterEditor({ resource, record, onSave, onClose, busy }) {
     participates:
       record.participates_in_comprehensive_health_insurance || false,
   });
+  const dirty = form.name !== (record.name || "") || form.description !== (record.description || "") || form.position_code !== (record.position_code || "") || form.participates !== Boolean(record.participates_in_comprehensive_health_insurance || false);
   return (
-    <Drawer
+    <Modal
       title={`${record.id ? "Edit" : "Add"} ${singularTitle(resource)}`}
       onClose={onClose}
+      size="small"
+      closeOnBackdrop={!dirty}
+      canDismiss={!dirty && !busy}
     >
-      <form
+      <form className="modal-grid"
         onSubmit={(e) => {
           e.preventDefault();
           onSave(form);
@@ -734,7 +747,7 @@ function MasterEditor({ resource, record, onSave, onClose, busy }) {
             />
           </label>
         )}
-        <label>
+        <label className="modal-full-width">
           Description
           <textarea
             value={form.description}
@@ -753,7 +766,7 @@ function MasterEditor({ resource, record, onSave, onClose, busy }) {
             Participates in comprehensive health insurance
           </label>
         )}
-        <footer className="drawer-actions">
+        <footer className="modal-actions">
           <button type="button" className="secondary" onClick={onClose} disabled={busy}>
             Cancel
           </button>
@@ -762,22 +775,7 @@ function MasterEditor({ resource, record, onSave, onClose, busy }) {
           </button>
         </footer>
       </form>
-    </Drawer>
-  );
-}
-function Drawer({ title, children, onClose }) {
-  return (
-    <div className="drawer-backdrop">
-      <aside className="drawer" role="dialog" aria-modal="true">
-        <header>
-          <h2>{title}</h2>
-          <button onClick={onClose} aria-label="Close">
-            ×
-          </button>
-        </header>
-        {children}
-      </aside>
-    </div>
+    </Modal>
   );
 }
 
@@ -942,6 +940,8 @@ function UserEditor({ user, roles, token, toast, onClose, done, onCapabilitiesCh
   const [busy, setBusy] = useState(false);
   const [version, setVersion] = useState(user.updated_at || null);
   const [conflict, setConflict] = useState(false);
+  const initialRoleIds = user.role_ids || user.user_roles?.map((x) => x.role_id) || [];
+  const dirty = form.full_name !== (user.full_name || "") || form.email !== (user.email || "") || form.phone !== (user.phone || "") || form.password !== "" || JSON.stringify([...form.role_ids].sort()) !== JSON.stringify([...initialRoleIds].sort());
   const refreshLatest = async () => {
     setBusy(true);
     try {
@@ -985,9 +985,9 @@ function UserEditor({ user, roles, token, toast, onClose, done, onCapabilitiesCh
     }
   };
   return (
-    <Drawer title={isNew ? "Add User" : "Manage User"} onClose={onClose}>
+    <Modal title={isNew ? "Add User" : "Manage User"} size="medium" onClose={onClose} closeOnBackdrop={!dirty} canDismiss={!dirty && !busy}>
       {conflict && <div className="employee-notice danger">This user’s access was updated by another administrator.<span className="notice-actions"><button type="button" className="secondary" disabled={busy} onClick={refreshLatest}>Refresh Latest Access</button><button type="button" className="text-button" disabled={busy} onClick={() => setConflict(false)}>Keep Editing</button></span></div>}
-      <form onSubmit={save}>
+      <form className="modal-grid" onSubmit={save}>
         <label>
           Full Name
           <input
@@ -1029,7 +1029,7 @@ function UserEditor({ user, roles, token, toast, onClose, done, onCapabilitiesCh
             <small>Use at least 12 characters.</small>
           </label>
         )}
-        <section className="role-assignment" aria-labelledby="assigned-roles-title">
+        <section className="role-assignment modal-full-width" aria-labelledby="assigned-roles-title">
           <div className="role-assignment-head">
             <h3 id="assigned-roles-title">Assigned roles</h3>
             <p>Roles determine the areas of HMS this user can access.</p>
@@ -1054,14 +1054,14 @@ function UserEditor({ user, roles, token, toast, onClose, done, onCapabilitiesCh
               </label>
             ))}
         </section>
-        <footer className="drawer-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy}>{busy ? "Saving…" : "Save changes"}</button></footer>
+        <footer className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy}>{busy ? "Saving…" : "Save changes"}</button></footer>
       </form>
-    </Drawer>
+    </Modal>
   );
 }
 
 function Roles({ token, toast, onCapabilitiesChanged }) {
-  const [roles, setRoles] = useState(null), [perms, setPerms] = useState([]), [selected, setSelected] = useState(null), [selectedIds, setSelectedIds] = useState(new Set()), [originalIds, setOriginalIds] = useState(new Set()), [busy, setBusy] = useState(false), [search, setSearch] = useState(""), [filter, setFilter] = useState("all"), [conflict, setConflict] = useState(false);
+  const [roles, setRoles] = useState(null), [perms, setPerms] = useState([]), [selected, setSelected] = useState(null), [selectedIds, setSelectedIds] = useState(new Set()), [originalIds, setOriginalIds] = useState(new Set()), [busy, setBusy] = useState(false), [search, setSearch] = useState(""), [filter, setFilter] = useState("all"), [conflict, setConflict] = useState(false), [createOpen, setCreateOpen] = useState(false);
   const load = async (keepId) => {
     try {
       setRoles(null);
@@ -1095,8 +1095,36 @@ function Roles({ token, toast, onCapabilitiesChanged }) {
   const usersFor = (role) => role.user_roles?.[0]?.count ?? 0;
   const changes = [...selectedIds].filter((id) => !originalIds.has(id)).length + [...originalIds].filter((id) => !selectedIds.has(id)).length;
   const shown = (roles || []).filter((role) => (filter === "all" || (filter === "active" ? role.is_active : !role.is_active)) && `${role.name} ${role.description || ""}`.toLowerCase().includes(search.toLowerCase()));
-  if (selected) return <section className="section-view roles-view role-workspace"><button className="back-to-roles" onClick={() => { setSelected(null); setConflict(false); }}>← Back to Roles</button>{conflict && <div className="employee-notice danger">This role was updated by another administrator.<span className="notice-actions"><button className="secondary" disabled={busy} onClick={() => { setConflict(false); load(selected.id); }}>Refresh latest permissions</button><button className="text-button" disabled={busy} onClick={() => setConflict(false)}>Keep editing</button></span></div>}<header className="role-workspace-header"><div><h1>{selected.name}</h1><p>{selected.description || "Choose the areas this role can access."}</p></div><div><Status active={selected.is_active}/><span className="role-assigned">{usersFor(selected)} assigned user{usersFor(selected) === 1 ? "" : "s"}</span></div></header><div className="role-page-actions"><span>Manage access by business area.</span><div><button className="secondary" disabled={busy || !selected.is_active} onClick={() => setSelectedIds(new Set(perms.map((item) => item.id)))}>Select all permissions</button><button className="text-button" disabled={busy || !selected.is_active} onClick={() => setSelectedIds(new Set())}>Clear all</button></div></div><div className="permission-groups">{Object.entries(groups).map(([group, items]) => <section className="permission-group" key={group}><header><div><h2>{group}</h2><p>{items.length} permission{items.length === 1 ? "" : "s"}</p></div><div><button className="text-button" disabled={busy || !selected.is_active} onClick={() => setGroup(items, true)}>Select all</button><button className="text-button" disabled={busy || !selected.is_active} onClick={() => setGroup(items, false)}>Clear</button></div></header>{items.map((item) => { const [, label] = readable(item); return <label className="permission" key={item.id}><input type="checkbox" checked={selectedIds.has(item.id)} onChange={() => toggle(item.id)} disabled={busy || !selected.is_active}/><span>{label}</span>{item.description && item.description.toLowerCase() !== label.toLowerCase() && <small>{item.description}</small>}</label>; })}</section>)}</div>{changes > 0 && <div className="unsaved-role-bar"><strong>{changes} unsaved change{changes === 1 ? "" : "s"}</strong><div><button className="secondary" disabled={busy} onClick={() => setSelectedIds(new Set(originalIds))}>Cancel</button><button className="primary" disabled={busy || !selected.is_active} onClick={save}>{busy ? "Saving…" : "Save changes"}</button></div></div>}</section>;
-  return <section className="section-view roles-view"><div className="section-head"><div><h1>Roles & Permissions</h1><p>Manage what each role can access across HMS.</p></div><button className="primary" onClick={async () => { const name = window.prompt("Role name"); if (!name) return; try { await setupApi.createRole({ name }, token); toast("Role created.", "success"); load(); } catch (e) { toast(e.message, "error"); } }}>+ Create Role</button></div><div className="toolbar roles-toolbar"><label className="search">⌕ <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search roles" /></label><select value={filter} onChange={(e) => setFilter(e.target.value)}><option value="all">All roles</option><option value="active">Active</option><option value="inactive">Inactive</option></select></div>{!roles ? <LoadingRows /> : shown.length ? <div className="role-table-wrap"><table className="role-table"><thead><tr><th>Role</th><th>Description</th><th>Assigned users</th><th>Status</th><th aria-label="Actions" /></tr></thead><tbody>{shown.map((role) => <tr key={role.id} tabIndex="0" onClick={() => openRole(role)} onKeyDown={(event) => event.key === "Enter" && openRole(role)}><td><strong>{role.name}</strong></td><td>{role.description || <span className="table-muted">Custom access role</span>}</td><td>{usersFor(role)}</td><td><Status active={role.is_active}/></td><td><button className="text-button" onClick={(event) => { event.stopPropagation(); openRole(role); }}>Open</button></td></tr>)}</tbody></table></div> : <div className="empty"><h3>{search ? "No roles match your search." : "No roles yet"}</h3><p>{search ? "Try changing your search or status filter." : "Create a role to define access for your team."}</p></div>}<p className="role-super-admin-note">Super Admin accounts retain full system access independently of role permissions.</p></section>;
+  if (selected) return <Modal title={selected.name} description={selected.description || "Manage access to HMS."} onClose={() => { setSelected(null); setConflict(false); }} closeOnBackdrop={changes === 0} canDismiss={changes === 0 && !busy} size="large" className="role-permissions-modal"><section className="role-workspace-content">{conflict && <div className="employee-notice danger">This role was updated by another administrator.<span className="notice-actions"><button className="secondary" disabled={busy} onClick={() => { setConflict(false); load(selected.id); }}>Refresh latest permissions</button><button className="text-button" disabled={busy} onClick={() => setConflict(false)}>Keep editing</button></span></div>}<header className="role-workspace-header"><div><span className="table-muted">Role access</span></div><div><Status active={selected.is_active}/><span className="role-assigned">{usersFor(selected)} assigned user{usersFor(selected) === 1 ? "" : "s"}</span></div></header><div className="role-page-actions"><span>Manage access by business area.</span><div><button className="secondary" disabled={busy || !selected.is_active} onClick={() => setSelectedIds(new Set(perms.map((item) => item.id)))}>Select all permissions</button><button className="text-button" disabled={busy || !selected.is_active} onClick={() => setSelectedIds(new Set())}>Clear all</button></div></div><div className="permission-groups">{Object.entries(groups).map(([group, items]) => <section className="permission-group" key={group}><header><div><h2>{group}</h2><p>{items.length} permission{items.length === 1 ? "" : "s"}</p></div><div><button className="text-button" disabled={busy || !selected.is_active} onClick={() => setGroup(items, true)}>Select all</button><button className="text-button" disabled={busy || !selected.is_active} onClick={() => setGroup(items, false)}>Clear</button></div></header>{items.map((item) => { const [, label] = readable(item); return <label className="permission" key={item.id}><input type="checkbox" checked={selectedIds.has(item.id)} onChange={() => toggle(item.id)} disabled={busy || !selected.is_active}/><span>{label}</span>{item.description && item.description.toLowerCase() !== label.toLowerCase() && <small>{item.description}</small>}</label>; })}</section>)}</div>{changes > 0 && <div className="unsaved-role-bar"><strong>{changes} unsaved change{changes === 1 ? "" : "s"}</strong><div><button className="secondary" disabled={busy} onClick={() => setSelectedIds(new Set(originalIds))}>Cancel</button><button className="primary" disabled={busy || !selected.is_active} onClick={save}>{busy ? "Saving…" : "Save changes"}</button></div></div>}</section></Modal>;
+  return <><section className="section-view roles-view"><div className="section-head"><div><h1>Roles & Permissions</h1><p>Manage what each role can access across HMS.</p></div><button className="primary" onClick={() => setCreateOpen(true)}>+ Create Role</button></div><div className="toolbar roles-toolbar"><label className="search">⌕ <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search roles" /></label><select value={filter} onChange={(e) => setFilter(e.target.value)}><option value="all">All roles</option><option value="active">Active</option><option value="inactive">Inactive</option></select></div>{!roles ? <LoadingRows /> : shown.length ? <div className="role-table-wrap"><table className="role-table"><thead><tr><th>Role</th><th>Description</th><th>Assigned users</th><th>Status</th><th aria-label="Actions" /></tr></thead><tbody>{shown.map((role) => <tr key={role.id} tabIndex="0" onClick={() => openRole(role)} onKeyDown={(event) => event.key === "Enter" && openRole(role)}><td><strong>{role.name}</strong></td><td>{role.description || <span className="table-muted">Custom access role</span>}</td><td>{usersFor(role)}</td><td><Status active={role.is_active}/></td><td><button className="text-button" onClick={(event) => { event.stopPropagation(); openRole(role); }}>Open</button></td></tr>)}</tbody></table></div> : <div className="empty"><h3>{search ? "No roles match your search." : "No roles yet"}</h3><p>{search ? "Try changing your search or status filter." : "Create a role to define access for your team."}</p></div>}<p className="role-super-admin-note">Super Admin accounts retain full system access independently of role permissions.</p></section>{createOpen && <RoleCreateModal token={token} toast={toast} onClose={() => setCreateOpen(false)} onCreated={load} />}</>;
+}
+
+function RoleCreateModal({ token, toast, onClose, onCreated }) {
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await setupApi.createRole({ name: name.trim() }, token);
+      toast("Role created.", "success");
+      await onCreated();
+      onClose();
+    } catch (requestError) {
+      setError(requestError.message || "Role could not be created.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <Modal title="Create role" size="small" onClose={onClose} closeOnBackdrop={!name.trim()} canDismiss={!busy && !name.trim()}>
+    <form onSubmit={submit}>
+      <label>Role name<input autoFocus required maxLength={120} value={name} onChange={(event) => setName(event.target.value)} /></label>
+      {error && <div className="employee-notice danger" role="alert">{error}</div>}
+      <footer className="modal-actions"><button type="button" className="secondary" onClick={onClose} disabled={busy}>Cancel</button><button className="primary" disabled={busy}>{busy ? "Creating…" : "Create role"}</button></footer>
+    </form>
+  </Modal>;
 }
 
 function Insurance({ token, toast }) {
@@ -1349,7 +1377,7 @@ function AppShell({ session, onLogout }) {
   const go = (id) => (location.hash = id);
   const moduleContext = page === "dashboard"
     ? ["Workspace", "Workforce intelligence"]
-    : page.startsWith("employees") || ["people", "documents", "work-queues", "lifecycle", "data-quality"].includes(page)
+    : page.startsWith("employees") || page.startsWith("contracts") || ["people", "documents", "social-insurance", "work-queues", "lifecycle", "data-quality"].includes(page)
       ? ["Workspace", "People operations"]
       : ["Workspace", "Organization settings"];
   const employeeParts = page.split("/");
@@ -1360,6 +1388,7 @@ function AppShell({ session, onLogout }) {
       <EmployeesList token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
     )
     : page === "work-queues" ? <WorkQueuesRedirect go={go} />
+    : page === "contracts/renewals" ? <ContractRenewals token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
     : page === "lifecycle" ? <Lifecycle go={go} />
     : page === "data-quality" ? <DataQuality go={go} />
     : page === "employees" ? (
@@ -1368,6 +1397,8 @@ function AppShell({ session, onLogout }) {
       <EmployeeForm token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
     ) : page === "documents" ? (
       <DocumentsCompliance token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
+    ) : page === "social-insurance" ? (
+      <SocialInsurance token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
     ) : employeeParts[0] === "employees" && employeeParts[2] === "edit" ? (
       <EmployeeEditorLoader id={employeeParts[1]} token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
     ) : employeeParts[0] === "employees" && employeeParts[1] ? (
@@ -1395,7 +1426,7 @@ function AppShell({ session, onLogout }) {
         }}
         logout={onLogout}
         isOpen={nav}
-        onOpen={() => { setNav(true); setActivePanel((current) => current || (page.startsWith("dashboard") ? "analytics" : page.startsWith("employees") || ["people", "work-queues", "documents", "lifecycle", "data-quality"].includes(page) ? "people" : "setup")); }}
+        onOpen={() => { setNav(true); setActivePanel((current) => current || (page.startsWith("dashboard") ? "analytics" : page.startsWith("employees") || ["people", "work-queues", "documents", "social-insurance", "lifecycle", "data-quality"].includes(page) ? "people" : "setup")); }}
         close={() => setNav(false)}
         activePanel={activePanel}
         setActivePanel={setActivePanel}

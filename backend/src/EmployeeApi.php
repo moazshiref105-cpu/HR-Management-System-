@@ -95,15 +95,21 @@ final class EmployeeApi
     {
         $this->allow($actor, 'employees.view');
         if (($query['queue'] ?? '') !== '') return $this->workQueue($query, $actor);
+        $status = (string) ($query['status'] ?? $query['employee_status'] ?? 'active');
+        if ($status === '') $status = 'active';
+        if (!in_array($status, EmployeeContract::statuses(), true)) throw new HttpException('status must be active or resigned.', 422);
+        $classification = EmployeeContract::normalizeClassification($query['classification'] ?? $query['employee_classification'] ?? 'all');
+        if (!in_array($classification, array_merge(['all'], EmployeeContract::classifications()), true)) throw new HttpException('classification must be all, standard, or 5_percent.', 422);
         $page = $this->page($query['page'] ?? 1);
         $pageSize = $this->pageSize($query['page_size'] ?? 25);
         $sort = $this->sort($query['sort'] ?? 'employee_number');
         $direction = $this->direction($query['direction'] ?? 'asc');
-        $filters = [];
-        if (isset($query['status']) && $query['status'] !== '') $query['employee_status'] = $query['status'];
+        $filters = ['employee_status=eq.' . rawurlencode($status)];
         foreach (['employee_status' => 'employee_status', 'department' => 'department_id', 'team' => 'team_id', 'position' => 'position_id', 'project' => 'project_id', 'governorate' => 'governorate_id'] as $input => $column) {
-            if (isset($query[$input]) && $query[$input] !== '') $filters[] = $column . '=eq.' . rawurlencode((string) $query[$input]);
+            if ($input !== 'employee_status' && isset($query[$input]) && $query[$input] !== '') $filters[] = $column . '=eq.' . rawurlencode((string) $query[$input]);
         }
+        // Resigned employees always appear together; classification is an active-workforce filter.
+        if ($status === 'active' && $classification !== 'all') $filters[] = 'employee_classification=eq.' . rawurlencode((string) $classification);
         if (isset($query['search']) && trim((string) $query['search']) !== '') {
             $search = trim((string) $query['search']);
             $term = rawurlencode('*' . $search . '*');
@@ -112,7 +118,7 @@ final class EmployeeApi
         }
         // Keep the list projection aligned with the columns rendered by EmployeesList.
         // Detail-only fields and relations belong to the detail endpoint, not every list row.
-        $select = 'id,employee_number,employee_status,arabic_full_name,english_full_name,joining_date,department:departments(id,name),position:positions(id,name,position_code)';
+        $select = 'id,employee_number,employee_status,employee_classification,arabic_full_name,english_full_name,joining_date,department:departments(id,name),position:positions(id,name,position_code)';
         $offset = ($page - 1) * $pageSize;
         $url = '/rest/v1/employees?select=' . $select . '&order=' . $sort . '.' . $direction . ',id.asc&offset=' . $offset . '&limit=' . $pageSize;
         if ($filters) $url .= '&' . implode('&', $filters);
@@ -136,8 +142,14 @@ final class EmployeeApi
         $direction = $this->direction($query['direction'] ?? 'asc');
         $filters = [];
         foreach (['department' => 'department_id', 'team' => 'team_id', 'position' => 'position_id', 'project' => 'project_id', 'governorate' => 'governorate_id', 'status' => 'employee_status', 'employee_status' => 'employee_status'] as $input => $key) {
-            if (($query[$input] ?? '') !== '') $filters[$key] = (string) $query[$input];
+            if (($query[$input] ?? '') !== '') {
+                if ($key === 'employee_status' && !in_array((string) $query[$input], EmployeeContract::statuses(), true)) throw new HttpException('status must be active or resigned.', 422);
+                $filters[$key] = (string) $query[$input];
+            }
         }
+        $classification = EmployeeContract::normalizeClassification($query['classification'] ?? $query['employee_classification'] ?? 'all');
+        if (!in_array($classification, array_merge(['all'], EmployeeContract::classifications()), true)) throw new HttpException('classification must be all, standard, or 5_percent.', 422);
+        if ($classification !== 'all') $filters['employee_classification'] = (string) $classification;
         foreach (['from', 'to', 'search'] as $key) if (($query[$key] ?? '') !== '') $filters[$key] = (string) $query[$key];
         $result = $this->supabase->service('POST', '/rest/v1/rpc/employee_work_queue', [
             'p_metric' => $queue, 'p_filters' => $filters, 'p_page' => $page,
@@ -224,6 +236,7 @@ final class EmployeeApi
     private function update(string $id, array $body, array $actor): array
     {
         $this->allow($actor, 'employees.edit');
+        if (array_key_exists('employee_status', $body)) throw new HttpException('Use the employee status workflow to change employment status.', 422);
         if (array_key_exists('employee_number', $body) || array_key_exists('position_code', $body)) throw new RuntimeException('Employee ID and position code cannot be changed directly.');
         $this->guardSections($body, $actor, false);
         $record = $this->employeeRecord($body, false, $actor);
@@ -242,12 +255,13 @@ final class EmployeeApi
     {
         $this->allow($actor, 'employees.edit');
         $status = (string) ($body['employee_status'] ?? '');
-        if (!in_array($status, ['active', 'resigned', 'inactive'], true)) throw new RuntimeException('employee_status must be active, resigned, or inactive.');
-        $current = $this->supabase->service('GET', '/rest/v1/employees?select=id,joining_date&id=eq.' . rawurlencode($id) . '&limit=1');
+        if (!in_array($status, EmployeeContract::statuses(), true)) throw new HttpException('employee_status must be active or resigned.', 422);
+        $current = $this->supabase->service('GET', '/rest/v1/employees?select=id,joining_date,employee_status&id=eq.' . rawurlencode($id) . '&limit=1');
         if (!isset($current[0]) || !is_array($current[0])) throw new HttpException('Employee not found.', 404);
-        if ($status !== 'active') {
+        if ($status === 'active' && ($current[0]['employee_status'] ?? null) === 'resigned') throw new HttpException('A resigned employee cannot be reactivated through the generic status workflow.', 422);
+        if ($status === 'resigned') {
             $this->allow($actor, 'employees.delete');
-            if (!$this->date($body['leaving_date'] ?? null) || !$this->positiveId($body['leaving_reason_id'] ?? null)) throw new RuntimeException('Leaving date and leaving reason are required for resigned or inactive employees.');
+            if (!$this->date($body['leaving_date'] ?? null) || !$this->positiveId($body['leaving_reason_id'] ?? null)) throw new RuntimeException('Leaving date and leaving reason are required for resigned employees.');
             if ((string) $body['leaving_date'] < (string) $current[0]['joining_date']) throw new RuntimeException('Leaving date cannot be before joining date.');
             $this->assertActiveReference('leaving_reasons', (int) $body['leaving_reason_id']);
         }
@@ -445,10 +459,14 @@ final class EmployeeApi
         if (isset($record['date_of_birth']) && $record['date_of_birth'] > (new DateTimeImmutable('today'))->format('Y-m-d')) throw new RuntimeException('date_of_birth cannot be in the future.');
         foreach (self::REFERENCES as $column => $table) if (array_key_exists($column, $record) && $record[$column] !== null) { if (!$this->positiveId($record[$column])) throw new RuntimeException("{$column} must be a valid ID."); $this->assertActiveReference($table, (int) $record[$column]); }
         if (isset($record['gender']) && !in_array($record['gender'], ['male','female'], true)) throw new RuntimeException('gender must be male or female.');
-        if (isset($record['employee_classification']) && !in_array($record['employee_classification'], ['standard','five_percent'], true)) throw new RuntimeException('employee_classification must be standard or five_percent.');
+        if (array_key_exists('employee_classification', $record)) {
+            $record['employee_classification'] = EmployeeContract::normalizeClassification($record['employee_classification']);
+            if (!in_array($record['employee_classification'], EmployeeContract::classifications(), true)) throw new HttpException('employee_classification must be standard or 5_percent.', 422);
+        }
+        if (isset($record['employee_status']) && !in_array($record['employee_status'], EmployeeContract::statuses(), true)) throw new HttpException('employee_status must be active or resigned.', 422);
         if (array_key_exists('bank_account_number', $record) && $record['bank_account_number'] !== null) $record['bank_account_number'] = trim((string) $record['bank_account_number']) ?: null;
         if (isset($record['contract_signing_date'], $record['joining_date']) && $record['contract_signing_date'] < $record['joining_date']) throw new RuntimeException('Contract signing date cannot be before joining date.');
-        if (($record['employee_status'] ?? 'active') !== 'active' && (!$this->date($record['leaving_date'] ?? null) || !$this->positiveId($record['leaving_reason_id'] ?? null))) throw new RuntimeException('Leaving date and leaving reason are required for resigned or inactive employees.');
+        if (($record['employee_status'] ?? 'active') === 'resigned' && (!$this->date($record['leaving_date'] ?? null) || !$this->positiveId($record['leaving_reason_id'] ?? null))) throw new RuntimeException('Leaving date and leaving reason are required for resigned employees.');
         if ($creating) $record['created_by'] = $actor['id'];
         $record['updated_by'] = $actor['id'];
         return $record;
