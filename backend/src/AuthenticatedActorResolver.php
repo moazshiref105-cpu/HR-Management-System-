@@ -97,6 +97,9 @@ final class AuthenticatedActorResolver
         if (PHP_SAPI !== 'cli-server') {
             return false;
         }
+        if (getenv('HMS_LOCAL_AUTH_BYPASS') !== 'true') {
+            return false;
+        }
         return in_array($_SERVER['REMOTE_ADDR'] ?? '', ['127.0.0.1', '::1'], true);
     }
 

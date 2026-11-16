@@ -9,6 +9,7 @@ export const supabase = authConfigured ? createClient(url, key, { auth: { persis
 // is paired with the backend's loopback-only HMS_LOCAL_AUTH_BYPASS guard.
 export const localDevAuthBypass = Boolean(
   import.meta.env.DEV &&
+    import.meta.env.VITE_LOCAL_AUTH_BYPASS === 'true' &&
     typeof window !== 'undefined' &&
     ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname),
 )

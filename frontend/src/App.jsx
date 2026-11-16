@@ -31,6 +31,7 @@ import { workQueueDefinitions, workQueueHash } from "./workQueues";
 import { Dashboard } from "./Dashboard";
 import { DataQuality, Lifecycle } from "./PeopleOperations";
 import { Modal } from "./Modal";
+import roleMetadata from "../../shared/role-metadata.json";
 
 const groups = [
   {
@@ -256,6 +257,7 @@ function Login({ onSession }) {
   const [busy, setBusy] = useState(false);
   const submit = async (e) => {
     e.preventDefault();
+    if (busy) return;
     setError("");
     if (!email || !password) return setError("Enter your email and password.");
     if (!authConfigured)
@@ -263,17 +265,31 @@ function Login({ onSession }) {
         "Browser authentication is not configured. Add the safe VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY values.",
       );
     setBusy(true);
-    const { data, error: authError } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-    setBusy(false);
-    if (authError)
+    try {
+      const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password });
+      if (authError) setError("Unable to sign in. Check your email and password.");
+      else onSession(data.session);
+    } catch {
       setError("Unable to sign in. Check your email and password.");
-    else onSession(data.session);
+    } finally {
+      setBusy(false);
+    }
   };
   return (
     <main className="login-page">
+      <div className="workforce-visual" aria-hidden="true">
+        <div className="visual-grid" />
+        <div className="visual-orbit visual-orbit-one" />
+        <div className="visual-orbit visual-orbit-two" />
+        <svg className="visual-network" viewBox="0 0 800 900" preserveAspectRatio="none" focusable="false">
+          <path d="M42 145C214 178 260 285 392 330S630 365 762 426M-28 510C135 435 230 476 334 550S578 735 836 655M114 870C213 718 267 640 392 626S611 505 702 260M112 145C189 305 173 403 112 510M392 330C440 443 429 534 392 626M702 260C670 409 708 540 762 655" />
+          <circle cx="42" cy="145" r="3" /><circle cx="392" cy="330" r="4" /><circle cx="762" cy="426" r="3" /><circle cx="334" cy="550" r="3" /><circle cx="392" cy="626" r="4" /><circle cx="702" cy="260" r="3" /><circle cx="114" cy="870" r="3" />
+        </svg>
+        <div className="visual-node visual-node-main"><span /></div>
+        <div className="visual-node visual-node-left"><span /></div>
+        <div className="visual-node visual-node-right"><span /></div>
+        <div className="visual-node visual-node-bottom"><span /></div>
+      </div>
       <section className="login-brand-panel" aria-label="HR Management System">
         <div className="login-brand-content">
           <div className="login-brand-lockup">
@@ -285,18 +301,7 @@ function Login({ onSession }) {
           <div className="login-brand-copy">
             <p className="eyebrow">ONE SECURE WORKSPACE</p>
             <h1>People operations, thoughtfully connected.</h1>
-          </div>
-          <div className="workforce-visual" aria-hidden="true">
-            <div className="visual-grid" />
-            <div className="visual-orbit visual-orbit-one" />
-            <div className="visual-orbit visual-orbit-two" />
-            <div className="visual-node visual-node-main"><span /></div>
-            <div className="visual-node visual-node-left"><span /></div>
-            <div className="visual-node visual-node-right"><span /></div>
-            <div className="visual-node visual-node-bottom"><span /></div>
-            <div className="visual-connector visual-connector-left" />
-            <div className="visual-connector visual-connector-right" />
-            <div className="visual-connector visual-connector-bottom" />
+            <p>Bring employee records, daily operations, and workforce insight together in one trusted place.</p>
           </div>
           <div className="login-value-list">
             <span><b>01</b> People</span>
@@ -317,16 +322,20 @@ function Login({ onSession }) {
             <div className="login-form-heading">
               <p className="eyebrow">HR MANAGEMENT SYSTEM</p>
               <h1>Welcome back</h1>
+              <p className="login-supporting-copy">Sign in to continue to your workspace.</p>
             </div>
-            <form onSubmit={submit} noValidate>
+            <form onSubmit={submit} noValidate aria-busy={busy}>
               <label>
                 Email
                 <input
+                  id="login-email"
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   autoComplete="email"
                   aria-invalid={!!error}
+                  aria-describedby={error ? "login-error" : undefined}
+                  required
                   placeholder="you@company.com"
                 />
               </label>
@@ -334,27 +343,33 @@ function Login({ onSession }) {
                 Password
                 <span className="password-wrap">
                   <input
+                    id="login-password"
                     type={show ? "text" : "password"}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     autoComplete="current-password"
+                    aria-invalid={!!error}
+                    aria-describedby={error ? "login-error" : undefined}
+                    required
                     placeholder="Enter your password"
                   />
                   <button
                     type="button"
                     onClick={() => setShow(!show)}
+                    aria-controls="login-password"
                     aria-label={show ? "Hide password" : "Show password"}
+                    aria-pressed={show}
                   >
                     {show ? "Hide" : "Show"}
                   </button>
                 </span>
               </label>
               {error && (
-                <p className="form-error" role="alert">
+                <p id="login-error" className="form-error" role="alert">
                   {error}
                 </p>
               )}
-              <button className="primary wide" disabled={busy}>
+              <button className="primary wide login-submit" type="submit" disabled={busy}>
                 {busy ? "Signing in…" : "Sign In"}
               </button>
             </form>
@@ -1029,18 +1044,18 @@ function UserEditor({ user, roles, token, toast, onClose, done, onCapabilitiesCh
             <small>Use at least 12 characters.</small>
           </label>
         )}
-        <section className="role-assignment modal-full-width" aria-labelledby="assigned-roles-title">
+        {user?.is_super_admin ? <section className="role-assignment modal-full-width" aria-label="Super Admin access"><div className="role-assignment-head"><h3>Super Admin</h3><p>This account has unrestricted HMS access. A normal role is not required.</p></div></section> : <section className="role-assignment modal-full-width" aria-labelledby="assigned-roles-title">
           <div className="role-assignment-head">
             <h3 id="assigned-roles-title">Assigned roles</h3>
             <p>Roles determine the areas of HMS this user can access.</p>
           </div>
           {roles
-            .filter((r) => r.is_active)
             .map((r) => (
               <label className="role-choice" key={r.id}>
                 <input
                   type="checkbox"
                   checked={form.role_ids.includes(r.id)}
+                  disabled={!r.is_active}
                   onChange={(e) =>
                     setForm({
                       ...form,
@@ -1050,10 +1065,10 @@ function UserEditor({ user, roles, token, toast, onClose, done, onCapabilitiesCh
                     })
                   }
                 />
-                <span><strong>{r.name}</strong><small>Active access role</small></span>
+                <span><strong>{r.name} · {r.is_active ? "Active" : "Inactive"}</strong><small>{r.description || "This role has no description yet."}</small><small>{(r.role_permissions || []).length} permissions · {[...new Set((r.role_permissions || []).map((x) => roleMetadata.permissionGroups[x.permissions?.module] || roleMetadata.permissionGroups[x.permissions?.module?.split(".")[0]]).filter(Boolean))].join(", ") || "No assigned permissions"}</small><small className="role-selected-state">{form.role_ids.includes(r.id) ? "Selected" : "Not selected"}</small></span>
               </label>
             ))}
-        </section>
+        </section>}
         <footer className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={busy}>{busy ? "Saving…" : "Save changes"}</button></footer>
       </form>
     </Modal>
@@ -1074,18 +1089,10 @@ function Roles({ token, toast, onCapabilitiesChanged }) {
   useEffect(() => { load(); }, [token]);
   const readable = (permission) => {
     const key = permission.permission_key;
-    const map = {
-      "employees.view": ["Employees", "View Employees"], "employees.create": ["Employees", "Add Employees"], "employees.edit": ["Employees", "Edit Employees"], "employees.delete": ["Employees", "Manage Employment Status"],
-      "employees.personal.view": ["Employees · Personal Information", "View personal information"], "employees.personal.edit": ["Employees · Personal Information", "Edit personal information"],
-      "employees.work.view": ["Employees · Work Information", "View work information"], "employees.work.edit": ["Employees · Work Information", "Edit work information"],
-      "employees.insurance.view": ["Employees · Insurance", "View insurance information"], "employees.insurance.edit": ["Employees · Insurance", "Edit insurance information"],
-      "employees.financial.view": ["Employees · Financial Information", "View financial information"], "employees.financial.edit": ["Employees · Financial Information", "Edit financial information"],
-      "dashboard.view": ["Workforce Analytics", "View Workforce Analytics"],
-      "setup.view": ["SetUp", "View Settings"], "setup.edit": ["SetUp", "Manage Settings"],
-      "users.view": ["Users & Access", "View Users"], "users.create": ["Users & Access", "Add Users"], "users.edit": ["Users & Access", "Edit Users"], "users.deactivate": ["Users & Access", "Deactivate Users"],
-      "roles.view": ["Users & Access", "View Roles & Permissions"], "roles.create": ["Users & Access", "Create Roles"], "roles.edit": ["Users & Access", "Manage Roles & Permissions"], "roles.delete": ["Users & Access", "Delete Roles"],
-    };
-    return map[key] || [permission.module.replaceAll(".", " · "), permission.description || permission.action.replaceAll("_", " ")];
+    const module = permission.module;
+    const group = roleMetadata.permissionGroups[module] || roleMetadata.permissionGroups[module.split(".")[0]] || "Other access";
+    const label = roleMetadata.permissionLabels[key] || permission.description || "Additional access permission";
+    return [group, label];
   };
   const groups = perms.reduce((all, permission) => { const [group] = readable(permission); (all[group] ||= []).push(permission); return all; }, {});
   const toggle = (id) => setSelectedIds((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
@@ -1093,14 +1100,26 @@ function Roles({ token, toast, onCapabilitiesChanged }) {
   const openRole = (role) => { const ids = new Set(role.role_permissions?.map((item) => item.permission_id) || []); setSelected(role); setSelectedIds(ids); setOriginalIds(new Set(ids)); setConflict(false); };
   const save = async () => { if (!selected) return; setBusy(true); try { const result = await setupApi.rolePermissions(selected.id, [...selectedIds], selected.updated_at, token); setSelected((current) => current ? { ...current, updated_at: result.updated_at } : current); setOriginalIds(new Set(selectedIds)); onCapabilitiesChanged(); toast("Permissions updated", "success"); await load(selected.id); } catch (e) { if (e.status === 409 && e.code === "role_conflict") setConflict(true); else toast(e.message, "error"); } finally { setBusy(false); } };
   const usersFor = (role) => role.user_roles?.[0]?.count ?? 0;
+  const permissionCount = (role) => role.role_permissions?.length ?? 0;
+  const accessAreas = (role) => [...new Set((role.role_permissions || []).map((item) => {
+    const module = item.permissions?.module || "";
+    return roleMetadata.permissionGroups[module] || roleMetadata.permissionGroups[module.split(".")[0]];
+  }).filter(Boolean))];
+  const toggleRoleStatus = async (role) => {
+    const action = role.is_active ? "deactivate" : "activate";
+    if (!window.confirm(`Are you sure you want to ${action} ${role.name}?${role.is_active ? " Users assigned to this role will lose its permissions." : ""}`)) return;
+    try { await setupApi.roleStatus(role.id, !role.is_active, role.updated_at, token); toast(`Role ${action}d.`, "success"); await load(role.id); }
+    catch (error) { toast(error.message, "error"); }
+  };
   const changes = [...selectedIds].filter((id) => !originalIds.has(id)).length + [...originalIds].filter((id) => !selectedIds.has(id)).length;
   const shown = (roles || []).filter((role) => (filter === "all" || (filter === "active" ? role.is_active : !role.is_active)) && `${role.name} ${role.description || ""}`.toLowerCase().includes(search.toLowerCase()));
   if (selected) return <Modal title={selected.name} description={selected.description || "Manage access to HMS."} onClose={() => { setSelected(null); setConflict(false); }} closeOnBackdrop={changes === 0} canDismiss={changes === 0 && !busy} size="large" className="role-permissions-modal"><section className="role-workspace-content">{conflict && <div className="employee-notice danger">This role was updated by another administrator.<span className="notice-actions"><button className="secondary" disabled={busy} onClick={() => { setConflict(false); load(selected.id); }}>Refresh latest permissions</button><button className="text-button" disabled={busy} onClick={() => setConflict(false)}>Keep editing</button></span></div>}<header className="role-workspace-header"><div><span className="table-muted">Role access</span></div><div><Status active={selected.is_active}/><span className="role-assigned">{usersFor(selected)} assigned user{usersFor(selected) === 1 ? "" : "s"}</span></div></header><div className="role-page-actions"><span>Manage access by business area.</span><div><button className="secondary" disabled={busy || !selected.is_active} onClick={() => setSelectedIds(new Set(perms.map((item) => item.id)))}>Select all permissions</button><button className="text-button" disabled={busy || !selected.is_active} onClick={() => setSelectedIds(new Set())}>Clear all</button></div></div><div className="permission-groups">{Object.entries(groups).map(([group, items]) => <section className="permission-group" key={group}><header><div><h2>{group}</h2><p>{items.length} permission{items.length === 1 ? "" : "s"}</p></div><div><button className="text-button" disabled={busy || !selected.is_active} onClick={() => setGroup(items, true)}>Select all</button><button className="text-button" disabled={busy || !selected.is_active} onClick={() => setGroup(items, false)}>Clear</button></div></header>{items.map((item) => { const [, label] = readable(item); return <label className="permission" key={item.id}><input type="checkbox" checked={selectedIds.has(item.id)} onChange={() => toggle(item.id)} disabled={busy || !selected.is_active}/><span>{label}</span>{item.description && item.description.toLowerCase() !== label.toLowerCase() && <small>{item.description}</small>}</label>; })}</section>)}</div>{changes > 0 && <div className="unsaved-role-bar"><strong>{changes} unsaved change{changes === 1 ? "" : "s"}</strong><div><button className="secondary" disabled={busy} onClick={() => setSelectedIds(new Set(originalIds))}>Cancel</button><button className="primary" disabled={busy || !selected.is_active} onClick={save}>{busy ? "Saving…" : "Save changes"}</button></div></div>}</section></Modal>;
-  return <><section className="section-view roles-view"><div className="section-head"><div><h1>Roles & Permissions</h1><p>Manage what each role can access across HMS.</p></div><button className="primary" onClick={() => setCreateOpen(true)}>+ Create Role</button></div><div className="toolbar roles-toolbar"><label className="search">⌕ <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search roles" /></label><select value={filter} onChange={(e) => setFilter(e.target.value)}><option value="all">All roles</option><option value="active">Active</option><option value="inactive">Inactive</option></select></div>{!roles ? <LoadingRows /> : shown.length ? <div className="role-table-wrap"><table className="role-table"><thead><tr><th>Role</th><th>Description</th><th>Assigned users</th><th>Status</th><th aria-label="Actions" /></tr></thead><tbody>{shown.map((role) => <tr key={role.id} tabIndex="0" onClick={() => openRole(role)} onKeyDown={(event) => event.key === "Enter" && openRole(role)}><td><strong>{role.name}</strong></td><td>{role.description || <span className="table-muted">Custom access role</span>}</td><td>{usersFor(role)}</td><td><Status active={role.is_active}/></td><td><button className="text-button" onClick={(event) => { event.stopPropagation(); openRole(role); }}>Open</button></td></tr>)}</tbody></table></div> : <div className="empty"><h3>{search ? "No roles match your search." : "No roles yet"}</h3><p>{search ? "Try changing your search or status filter." : "Create a role to define access for your team."}</p></div>}<p className="role-super-admin-note">Super Admin accounts retain full system access independently of role permissions.</p></section>{createOpen && <RoleCreateModal token={token} toast={toast} onClose={() => setCreateOpen(false)} onCreated={load} />}</>;
+  return <><section className="section-view roles-view"><div className="section-head"><div><h1>Roles & Permissions</h1><p>Manage what each role can access across HMS.</p></div><button className="primary" onClick={() => setCreateOpen(true)}>+ Create Role</button></div><div className="toolbar roles-toolbar"><label className="search">⌕ <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search roles" /></label><select value={filter} onChange={(e) => setFilter(e.target.value)}><option value="all">All roles</option><option value="active">Active</option><option value="inactive">Inactive</option></select></div>{!roles ? <LoadingRows /> : shown.length ? <div className="role-table-wrap"><table className="role-table"><thead><tr><th>Role</th><th>Description</th><th>Permissions</th><th>Assigned users</th><th>Status</th><th>Actions</th></tr></thead><tbody>{shown.map((role) => <tr key={role.id}><td><strong>{role.name}</strong></td><td>{role.description || "This role has no description yet."}</td><td>{permissionCount(role)}<small className="role-area-summary">{accessAreas(role).join(", ") || "No assigned permissions"}</small></td><td>{usersFor(role)}</td><td><Status active={role.is_active}/></td><td><button className="text-button" onClick={() => openRole(role)}>Edit permissions</button><button className="text-button" onClick={() => toggleRoleStatus(role)}>{role.is_active ? "Deactivate" : "Activate"}</button></td></tr>)}</tbody></table></div> : <div className="empty"><h3>{search ? "No roles match your search." : "No roles yet"}</h3><p>{search ? "Try changing your search or status filter." : "Create a role to define access for your team."}</p></div>}<p className="role-super-admin-note"><strong>Super Admin</strong> accounts have unrestricted HMS access independently of normal role permissions.</p></section>{createOpen && <RoleCreateModal token={token} toast={toast} onClose={() => setCreateOpen(false)} onCreated={load} />}</>;
 }
 
 function RoleCreateModal({ token, toast, onClose, onCreated }) {
   const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const submit = async (event) => {
@@ -1108,7 +1127,7 @@ function RoleCreateModal({ token, toast, onClose, onCreated }) {
     setBusy(true);
     setError("");
     try {
-      await setupApi.createRole({ name: name.trim() }, token);
+      await setupApi.createRole({ name: name.trim(), description: description.trim() }, token);
       toast("Role created.", "success");
       await onCreated();
       onClose();
@@ -1118,9 +1137,10 @@ function RoleCreateModal({ token, toast, onClose, onCreated }) {
       setBusy(false);
     }
   };
-  return <Modal title="Create role" size="small" onClose={onClose} closeOnBackdrop={!name.trim()} canDismiss={!busy && !name.trim()}>
+  return <Modal title="Create role" size="small" onClose={onClose} closeOnBackdrop={!name.trim() && !description.trim()} canDismiss={!busy && !name.trim() && !description.trim()}>
     <form onSubmit={submit}>
       <label>Role name<input autoFocus required maxLength={120} value={name} onChange={(event) => setName(event.target.value)} /></label>
+      <label>Description<textarea required maxLength={500} rows={3} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Explain what users with this role can access." /></label>
       {error && <div className="employee-notice danger" role="alert">{error}</div>}
       <footer className="modal-actions"><button type="button" className="secondary" onClick={onClose} disabled={busy}>Cancel</button><button className="primary" disabled={busy}>{busy ? "Creating…" : "Create role"}</button></footer>
     </form>
