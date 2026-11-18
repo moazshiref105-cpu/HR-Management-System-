@@ -1,3 +1,5 @@
+import { createDashboardApi } from "./dashboardApi";
+
 const BASE = import.meta.env.VITE_API_BASE_URL || ''
 const MASTER_RESOURCES = new Set([
   'religions', 'marital-statuses', 'diplomas', 'governorates', 'departments',
@@ -65,6 +67,25 @@ export const setupApi = {
   patchMaster: (resource, id, body, t) => api(`${masterPath(resource)}/${id}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
   masterStatus: (resource, id, is_active, t) => api(`${masterPath(resource)}/${id}/status`, t, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
   patchInsurance: (key, body, t) => api(`/api/setup/insurance-settings/${key}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
+}
+
+export const hiringPlansApi = {
+  options: (token) => api('/api/hiring-plans/options', token),
+  list: (token) => api('/api/hiring-plans', token),
+  create: (body, token) => api('/api/hiring-plans', token, { method: 'POST', body: JSON.stringify(body) }),
+  update: (id, body, token) => api(`/api/hiring-plans/${id}`, token, { method: 'PATCH', body: JSON.stringify(body) }),
+  history: (id, token) => api(`/api/hiring-plans/${id}/history`, token),
+  remove: (id, token) => api(`/api/hiring-plans/${id}`, token, { method: 'DELETE' }),
+  staffing: (filters, token) => {
+    const query = new URLSearchParams(Object.entries(filters || {}).filter(([, value]) => value !== '' && value != null)).toString()
+    return api(`/api/project-staffing${query ? `?${query}` : ''}`, token)
+  },
+  staffingOptions: (token) => api('/api/project-staffing/options', token),
+  employees: (id, page, pageSize, token) => api(`/api/project-staffing/${id}/employees?page=${page}&page_size=${pageSize}`, token),
+  review: (page, pageSize, search, token) => {
+    const query = new URLSearchParams(Object.entries({ page, page_size: pageSize, search }).filter(([, value]) => value !== '' && value != null)).toString()
+    return api(`/api/project-staffing/review?${query}`, token)
+  },
 }
 
 export const EMPLOYEE_LOOKUP_CACHE_TTL_MS = 60_000
@@ -158,6 +179,8 @@ export const employeesApi = {
   updateEmployeeStatus: (id, body, t) => api(`/api/employees/${id}/status`, t, { method: 'PATCH', body: JSON.stringify(body) }),
   addWife: (id, body, t) => api(`/api/employees/${id}/wives`, t, { method: 'POST', body: JSON.stringify(body) }),
   updateWife: (id, wifeId, body, t) => api(`/api/employees/${id}/wives/${wifeId}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
+  endWifeMarriage: (id, wifeId, body, t) => api(`/api/employees/${id}/wives/${wifeId}/end`, t, { method: 'POST', body: JSON.stringify(body) }),
+  correctWifeRecord: (id, wifeId, body, t) => api(`/api/employees/${id}/wives/${wifeId}/correct`, t, { method: 'POST', body: JSON.stringify(body) }),
   addChild: (id, body, t) => api(`/api/employees/${id}/children`, t, { method: 'POST', body: JSON.stringify(body) }),
   updateChild: (id, childId, body, t) => api(`/api/employees/${id}/children/${childId}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
   addLicense: (id, body, t) => api(`/api/employees/${id}/licenses`, t, { method: 'POST', body: JSON.stringify(body) }),
@@ -196,17 +219,4 @@ export const documentsApi = {
   update: (id, body, t) => api(`/api/documents/${id}`, t, { method: 'PATCH', body: JSON.stringify(body) }),
 }
 
-export const dashboardApi = {
-  metrics: (t) => dedupeInFlight(`GET:${t}:/api/dashboard/metrics`, () => api('/api/dashboard/metrics', t)),
-  executive: (params, t) => api(`/api/dashboard/executive?${new URLSearchParams(params)}`, t),
-  overview: (params, t) => api(`/api/dashboard/overview?${new URLSearchParams(params)}`, t),
-  secondary: (params, t) => api(`/api/dashboard/secondary?${new URLSearchParams(params)}`, t),
-  filterOptions: (t) => api('/api/dashboard/filter-options', t),
-  summary: (params, t) => api(`/api/dashboard/summary?${new URLSearchParams(params)}`, t),
-  analysis: (params, t) => api(`/api/dashboard/analysis?${new URLSearchParams(params)}`, t),
-  employees: (params, t) => api(`/api/dashboard/employees?${new URLSearchParams(params)}`, t),
-  attention: (params, t) => api(`/api/dashboard/attention?${new URLSearchParams(params)}`, t),
-  dimensions: (t) => api('/api/dashboard/dimensions', t),
-  options: (t) => dedupeInFlight(`GET:${t}:/api/dashboard/options`, () => api('/api/dashboard/options', t)),
-  trend: (params, t) => api(`/api/dashboard/trend?${new URLSearchParams(params)}`, t),
-}
+export const dashboardApi = createDashboardApi(api, dedupeInFlight);

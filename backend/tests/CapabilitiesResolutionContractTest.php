@@ -54,7 +54,8 @@ $start = strpos($setup, 'private function capabilities');
 $end = strpos($setup, 'private function isUuid', $start ?: 0);
 $method = $start === false || $end === false ? '' : substr($setup, $start, $end - $start);
 if (substr_count($method, "'/rest/v1/rpc/get_user_capabilities'") !== 1) throw new RuntimeException('Capabilities endpoint must make exactly one resolution RPC.');
-if (str_contains($method, 'user_has_permission') || str_contains($method, 'permissions?select=permission_key')) throw new RuntimeException('Capabilities endpoint retains the per-permission RPC pattern.');
+if (str_contains($method, 'user_has_permission')) throw new RuntimeException('Capabilities endpoint retains the per-permission RPC pattern.');
+if (!str_contains($method, "is_super_admin") || !str_contains($method, "permissions?select=permission_key&order=permission_key") || !str_contains($method, "withSuperAdminMarker")) throw new RuntimeException('Super Admin must resolve all registered permissions and receive the navigation marker.');
 
 $api = (new ReflectionClass(SetupApi::class))->newInstanceWithoutConstructor();
 $normalizer = new ReflectionMethod(SetupApi::class, 'capabilityKeys');

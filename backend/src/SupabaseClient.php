@@ -19,6 +19,21 @@ final class SupabaseClient
         return $this->request($method, $path, $this->secretKey, $payload, $headers);
     }
 
+    /** Uploads a generated private artifact without JSON-encoding its bytes. */
+    public function serviceBinary(string $path, string $bytes, string $contentType): void
+    {
+        if (!str_starts_with($path, '/storage/v1/object/import-export/')) throw new RuntimeException('Private storage path is invalid.');
+        $curl=curl_init($this->url . $path);
+        if($curl===false) throw new RuntimeException('Unable to initialize file storage client.');
+        curl_setopt_array($curl,[
+            CURLOPT_CUSTOMREQUEST=>'POST',CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>60,CURLOPT_CONNECTTIMEOUT=>10,
+            CURLOPT_HTTPHEADER=>['apikey: '.$this->secretKey,'Authorization: Bearer '.$this->secretKey,'Content-Type: '.$contentType,'x-upsert: false'],
+            CURLOPT_POSTFIELDS=>$bytes,
+        ]);
+        $response=curl_exec($curl); $status=(int)curl_getinfo($curl,CURLINFO_RESPONSE_CODE); curl_close($curl);
+        if($response===false||$status<200||$status>=300) throw new RuntimeException('Private workbook storage failed.');
+    }
+
     /** @return array{data:mixed,total:int} */
     public function serviceWithExactCount(string $method, string $path, ?array $payload = null, array $headers = []): array
     {
@@ -28,7 +43,9 @@ final class SupabaseClient
         $status = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
         $headerSize = (int) curl_getinfo($curl, CURLINFO_HEADER_SIZE);
         if (!is_string($response) || $status < 200 || $status >= 300) {
-            throw new RuntimeException("Supabase request failed with HTTP {$status}.");
+            $body = is_string($response) ? json_decode($response, true) : null;
+            $code = is_array($body) && is_string($body['code'] ?? null) ? $body['code'] : null;
+            throw new SupabaseRequestException($status, null, $code);
         }
         $headersRaw = substr($response, 0, $headerSize);
         $body = substr($response, $headerSize);
@@ -139,7 +156,7 @@ final class SupabaseClient
             if ($identifier === null && str_starts_with($path, '/auth/v1/admin/users') && $code === 'email_exists') {
                 $identifier = 'AUTH_EMAIL_EXISTS';
             }
-            throw new SupabaseRequestException($status, $identifier);
+            throw new SupabaseRequestException($status, $identifier, $code);
         }
         return $body === '' ? [] : json_decode($body, true, 512, JSON_THROW_ON_ERROR);
     }

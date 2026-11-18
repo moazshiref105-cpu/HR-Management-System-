@@ -239,7 +239,7 @@ final class SetupApi
     {
         $resource = $route[0] ?? ''; $table = self::MASTER_TABLES[$resource] ?? null;
         if ($table === null) throw new HttpException('Unknown master-data resource.', 404);
-        if ($method === 'GET' && count($route) === 1) { $this->allow($actor, 'setup.view'); return $this->supabase->service('GET', '/rest/v1/' . $table . '?select=*&order=name'); }
+        if ($method === 'GET' && count($route) === 1) { $this->allow($actor, 'setup.view'); $projection = $table === 'marital_statuses' ? 'id,name,description,is_active,created_at,updated_at,created_by,updated_by' : '*'; return $this->supabase->service('GET', '/rest/v1/' . $table . '?select=' . $projection . '&order=name'); }
         $this->allow($actor, 'setup.edit');
         if ($method === 'POST' && count($route) === 1) { $record = ['name' => $this->required($body, 'name'), 'description' => $body['description'] ?? null, 'created_by' => $actor['id']]; if ($table === 'positions') $record['position_code'] = $this->required($body, 'position_code'); if ($table === 'governorates') { $flag = $body['participates_in_comprehensive_health_insurance'] ?? false; if (!is_bool($flag)) throw new RuntimeException('participates_in_comprehensive_health_insurance must be boolean.'); $record['participates_in_comprehensive_health_insurance'] = $flag; } return $this->supabase->service('POST', '/rest/v1/' . $table, [$record], ['Prefer: return=representation']); }
         $id = (int) ($route[1] ?? 0); if ($id < 1) throw new RuntimeException('Record ID is required.');
@@ -308,8 +308,21 @@ final class SetupApi
     private function capabilities(string $method, array $route, array $actor): array
     {
         if ($method !== 'GET' || $route !== ['capabilities']) throw new HttpException('Route not found.', 404);
+        if (($actor['is_super_admin'] ?? false) === true) {
+            // Read the live permission registry so newly registered permissions
+            // become available automatically after a migration is applied.
+            // The wildcard is only a frontend navigation marker, never an API grant.
+            $rows = $this->supabase->service('GET', '/rest/v1/permissions?select=permission_key&order=permission_key');
+            return self::withSuperAdminMarker($this->capabilityKeys($rows), true);
+        }
         $rows = $this->supabase->service('POST', '/rest/v1/rpc/get_user_capabilities', ['p_user_id' => $actor['id']]);
         return $this->capabilityKeys($rows);
+    }
+
+    /** @param list<string> $keys @return list<string> */
+    public static function withSuperAdminMarker(array $keys, bool $isSuperAdmin): array
+    {
+        return $isSuperAdmin ? array_values(array_unique(array_merge(['*'], $keys))) : array_values(array_unique($keys));
     }
 
     /** @return list<string> */

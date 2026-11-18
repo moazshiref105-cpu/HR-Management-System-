@@ -74,6 +74,9 @@ final class EmployeeApi
         if (($route[1] ?? '') === 'status' && $method === 'PATCH') return $this->status($id, $body, $actor);
         if (($route[1] ?? '') === 'notifications' && $method === 'POST') return $this->refresh($id, $actor);
         if (($route[1] ?? '') === 'contract-renewals' && $method === 'POST') return $this->renew($id, $body, $actor);
+        if (($route[1] ?? '') === 'wives' && count($route) === 4 && ctype_digit((string) $route[2]) && in_array($route[3], ['end', 'correct'], true) && $method === 'POST') {
+            return $this->spouseLifecycle($id, (int) $route[2], $route[3], $body, $actor);
+        }
         if (in_array($route[1] ?? '', ['wives', 'children', 'licenses'], true)) return $this->nested($id, (string) $route[1], $method, array_slice($route, 2), $body, $actor);
         throw new HttpException('Route not found.', 404);
     }
@@ -299,13 +302,79 @@ final class EmployeeApi
             if ($record === []) throw new RuntimeException('At least one editable field is required.');
             $expectedUpdatedAt = $this->expectedUpdatedAt($body['expected_updated_at'] ?? null);
             $path = '/rest/v1/' . $table . '?id=eq.' . $id . '&employee_id=eq.' . rawurlencode($employeeId) . '&updated_at=eq.' . rawurlencode($expectedUpdatedAt);
-            $result = $this->supabase->service('PATCH', $path, $record, ['Prefer: return=representation']);
+            try {
+                $result = $this->supabase->service('PATCH', $path, $record, ['Prefer: return=representation']);
+            } catch (SupabaseRequestException $exception) {
+                if ($resource === 'wives' && $exception->identifier === 'HMS_SPOUSE_CORRECTED_RECORD_IMMUTABLE') throw new HttpException('Corrected spouse records are retained as immutable history.', 409, 'employee_spouse_corrected_immutable');
+                throw $exception;
+            }
             if (!isset($result[0]) || !is_array($result[0])) $this->throwNestedUpdateFailure($table, $employeeId, $id, $resource);
             $this->refreshNotificationsSafely($employeeId);
             $this->publishEmployeeInvalidationSafely($employeeId, 'employee_' . $resource . '_update');
             return $result;
         }
         throw new HttpException('Route not found.', 404);
+    }
+
+    /** Lifecycle transitions retain spouse rows so child-to-mother links remain valid. */
+    private function spouseLifecycle(string $employeeId, int $spouseId, string $action, array $body, array $actor): array
+    {
+        $this->allow($actor, 'employees.personal.edit');
+        if (!$this->positiveId($spouseId)) throw new HttpException('Choose a valid spouse record.', 422);
+        $expected = $this->expectedUpdatedAt($body['expected_updated_at'] ?? null);
+        $resultingStatusId = $body['resulting_marital_status_id'] ?? null;
+        if ($resultingStatusId !== null && !$this->positiveId($resultingStatusId)) throw new HttpException('Choose a valid resulting marital status.', 422);
+
+        if ($action === 'end') {
+            $effectiveDate = $body['effective_date'] ?? null;
+            $reason = $body['reason'] ?? null;
+            if (!$this->date($effectiveDate)) throw new HttpException('Enter a valid effective date.', 422);
+            if (!is_string($reason) || !in_array($reason, ['divorce', 'death'], true)) throw new HttpException('Choose divorce or death as the reason.', 422);
+            $rpc = 'end_employee_wife_marriage';
+            $payload = [
+                'p_employee_id' => $employeeId, 'p_spouse_id' => $spouseId,
+                'p_expected_updated_at' => $expected, 'p_effective_date' => $effectiveDate,
+                'p_end_reason' => $reason, 'p_resulting_marital_status_id' => $resultingStatusId === null ? null : (int) $resultingStatusId,
+                'p_actor_id' => $actor['id'],
+            ];
+        } else {
+            $reason = $body['reason'] ?? null;
+            if (!is_string($reason) || trim($reason) === '' || mb_strlen(trim($reason)) > 2000) throw new HttpException('Enter a correction reason (up to 2,000 characters).', 422);
+            $rpc = 'correct_employee_wife_record';
+            $payload = [
+                'p_employee_id' => $employeeId, 'p_spouse_id' => $spouseId,
+                'p_expected_updated_at' => $expected, 'p_correction_reason' => trim($reason),
+                'p_resulting_marital_status_id' => $resultingStatusId === null ? null : (int) $resultingStatusId,
+                'p_actor_id' => $actor['id'],
+            ];
+        }
+
+        try {
+            $result = $this->supabase->service('POST', '/rest/v1/rpc/' . $rpc, $payload);
+        } catch (SupabaseRequestException $exception) {
+            $this->throwSpouseLifecycleError($exception);
+        }
+        $this->publishEmployeeInvalidationSafely($employeeId, 'employee_spouse_' . $action);
+        return is_array($result) ? $result : [];
+    }
+
+    private function throwSpouseLifecycleError(SupabaseRequestException $exception): never
+    {
+        $code = $exception->identifier;
+        if (in_array($exception->databaseCode, ['PGRST202', 'PGRST204', 'PGRST205'], true)) throw new HttpException('Spouse lifecycle is not available yet. Review and apply the spouse lifecycle migration before using these actions.', 503, 'employee_spouse_lifecycle_migration_required');
+        if ($code === 'HMS_SPOUSE_STALE_VERSION') throw new HttpException('This spouse record changed after you opened it. Reload the profile and review the current details.', 409, 'employee_spouse_conflict');
+        if ($code === 'HMS_RESULTING_STATUS_REQUIRED') throw new HttpException('This is now the last current spouse. Choose the employee’s resulting marital status and try again.', 409, 'employee_spouse_resulting_status_required');
+        if ($code === 'HMS_RESULTING_STATUS_NOT_APPLICABLE') throw new HttpException('Another current spouse remains, so no resulting marital status should be selected.', 409, 'employee_spouse_resulting_status_not_applicable');
+        if ($code === 'HMS_RESULTING_STATUS_MARKER_MISSING') throw new HttpException('The required marital status is not configured. Ask a Setup Administrator to review the spouse lifecycle status setup.', 422, 'employee_spouse_status_setup_required');
+        if ($code === 'HMS_RESULTING_STATUS_MARKER_AMBIGUOUS' || $code === 'HMS_RESULTING_STATUS_MARKER_INVALID') throw new HttpException('The required marital status configuration is ambiguous or invalid. Ask a Setup Administrator to resolve the canonical status marker.', 422, 'employee_spouse_status_setup_invalid');
+        if ($code === 'HMS_RESULTING_STATUS_MARKER_INACTIVE') throw new HttpException('The required marital status is inactive. Ask a Setup Administrator to activate the canonical status before ending this marriage.', 422, 'employee_spouse_status_setup_inactive');
+        if ($code === 'HMS_RESULTING_STATUS_REASON_MISMATCH') throw new HttpException('The resulting marital status does not match the selected reason. Choose the status shown for that reason and try again.', 422, 'employee_spouse_status_reason_mismatch');
+        if ($code === 'HMS_SPOUSE_NOT_CURRENT') throw new HttpException('This spouse is no longer current. Reload the profile before continuing.', 409, 'employee_spouse_conflict');
+        if ($code === 'HMS_SPOUSE_ALREADY_CORRECTED') throw new HttpException('This spouse record was already corrected. Reload the profile.', 409, 'employee_spouse_conflict');
+        if ($code === 'HMS_RESULTING_STATUS_INVALID') throw new HttpException('Choose an active marital status other than Married.', 422, 'employee_spouse_status_invalid');
+        if ($code === 'HMS_SPOUSE_NOT_FOUND') throw new HttpException('Spouse record was not found for this employee.', 404);
+        if ($code === 'HMS_EMPLOYEE_NOT_FOUND') throw new HttpException('Employee was not found.', 404);
+        throw $exception;
     }
 
     /** @param array<string,mixed> $body @param array<string,mixed> $actor */
@@ -424,11 +493,12 @@ final class EmployeeApi
         $result = ['id' => $row['id'], 'employee_number' => $row['employee_number'], 'employee_status' => $row['employee_status'], 'employee_classification' => $row['employee_classification'], 'updated_at' => $row['updated_at']];
         if ($personal) $result['personal'] = $this->pick($row, array_merge(self::PERSONAL, ['identity_card_expiration_date', 'religion', 'marital_status', 'diploma', 'governorate']));
         if ($work) $result['work'] = $this->pick($row, array_merge(self::WORK, ['contract_expiration_date', 'probation_due_date', 'department', 'shift_type', 'team', 'position', 'project']));
-        $wives = $row['wives'] ?? [];
+        $spouseData = $personal ? $this->withSpouseLifecycleHistory($id, is_array($row['wives'] ?? null) ? $row['wives'] : []) : ['wives' => [], 'lifecycle_available' => false];
+        $wives = $spouseData['wives'];
         $children = $row['children'] ?? [];
         $settings = $needsCalculated ? $this->settingsFromRows($batch['settings'] ?? []) : [];
         $comprehensive = $needsCalculated ? $this->comprehensiveFromData($row, $settings, $wives, $children) : null;
-        if ($personal) $result['family'] = ['wives' => $wives, 'children' => $children];
+        if ($personal) $result['family'] = ['wives' => $wives, 'children' => $children, 'lifecycle_available' => $spouseData['lifecycle_available']];
         if ($insurance) { $result['insurance'] = array_merge($this->pick($row, self::INSURANCE), ['form_1_deadline_date' => $this->addMonths((string) $row['contract_signing_date'], 1), 'comprehensive_health' => $comprehensive]); $result['licenses'] = $row['licenses'] ?? []; $result['notifications'] = $row['notifications'] ?? []; }
         if ($financial) $result['financial'] = array_merge(['bank' => $row['bank'] ?? null], $this->pick($row, ['bank_account_number']));
         if ($this->can($actor, 'employees.edit')) $result['leaving'] = $this->pick($row, self::LEAVING);
@@ -445,6 +515,32 @@ final class EmployeeApi
         if ($includeInsurance) { $select .= ',licenses:employee_licenses(*,license_type:license_types(id,name)),notifications:employee_notifications(*)'; $orders = array_merge($orders, ['licenses.order=id', 'notifications.order=due_date,reminder_threshold_days']); }
         if ($includeWork) { $select .= ',contract_history:employee_contract_renewals(*)'; $orders[] = 'contract_history.order=renewal_signing_date.desc'; }
         return '/rest/v1/employees?id=eq.' . rawurlencode($id) . '&select=' . $select . ($orders === [] ? '' : '&' . implode('&', $orders));
+    }
+
+    /** Keep profiles usable before the additive lifecycle migration is applied. */
+    private function withSpouseLifecycleHistory(string $employeeId, array $wives): array
+    {
+        foreach ($wives as &$wife) {
+            if (is_array($wife)) {
+                $wife['relationship_status'] = $wife['relationship_status'] ?? 'current';
+                $wife['lifecycle_events'] = [];
+            }
+        }
+        unset($wife);
+        $ids = array_values(array_filter(array_map(static fn(array $wife): string => (string) ($wife['id'] ?? ''), array_filter($wives, 'is_array')), static fn(string $id): bool => ctype_digit($id)));
+        try {
+            $events = $this->supabase->service('GET', '/rest/v1/employee_wife_lifecycle_events?select=id,spouse_id,action,occurred_at,effective_date,reason_code,reason_text,previous_state,new_state,actor:users!employee_wife_lifecycle_events_actor_id_fkey(full_name)&employee_id=eq.' . rawurlencode($employeeId) . '&order=occurred_at.desc,id.desc&limit=500');
+        } catch (SupabaseRequestException $exception) {
+            if (in_array($exception->databaseCode, ['PGRST200', 'PGRST204', 'PGRST205'], true)) return ['wives' => $wives, 'lifecycle_available' => false];
+            throw $exception;
+        }
+        $bySpouse = [];
+        foreach (is_array($events) ? $events : [] as $event) {
+            if (is_array($event) && isset($event['spouse_id'])) $bySpouse[(string) $event['spouse_id']][] = $event;
+        }
+        foreach ($wives as &$wife) if (is_array($wife)) $wife['lifecycle_events'] = $bySpouse[(string) ($wife['id'] ?? '')] ?? [];
+        unset($wife);
+        return ['wives' => $wives, 'lifecycle_available' => true];
     }
 
     /** @param array<string,mixed> $body @param array<string,mixed> $actor @return array<string,mixed> */

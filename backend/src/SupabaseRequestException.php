@@ -9,7 +9,11 @@ use RuntimeException;
 /** Internal transport metadata only; database messages are never client-facing. */
 final class SupabaseRequestException extends RuntimeException
 {
-    public function __construct(public readonly int $status, public readonly ?string $identifier = null)
+    public function __construct(
+        public readonly int $status,
+        public readonly ?string $identifier = null,
+        public readonly ?string $databaseCode = null,
+    )
     {
         parent::__construct("Supabase request failed with HTTP {$status}.");
     }

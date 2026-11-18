@@ -100,6 +100,7 @@ const date = (value) =>
         new Date(`${value}T00:00:00`),
       )
     : "—";
+const timestampDate = (value) => value ? new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeZone: "Africa/Cairo" }).format(new Date(value)) : "—";
 
 const notificationCopy = {
   identity_card_expiry: { title: "Identity card expiry", category: "Identity documents", section: "personal" },
@@ -1478,6 +1479,74 @@ function EmployeeNotificationList({ notifications, onAction }) {
   </div>;
 }
 
+function SpouseLifecycleList({ records = [], canEdit, lifecycleAvailable, edit, lifecycle }) {
+  const stateLabel = (record) => ({ current: "Current", former: "Former", void: "Corrected record" }[record.relationship_status || "current"]);
+  return (
+    <section className="employee-spouse-list">
+      <header className="employee-spouse-list-head"><h3>Spouses</h3><span>{records.length}</span></header>
+      {canEdit && !lifecycleAvailable && <Notice kind="warning">End and correction actions will be available after the spouse lifecycle migration is reviewed and applied.</Notice>}
+      {records.length === 0 ? <p className="family-empty">No spouse records added.</p> : records.map((record) => {
+        const state = record.relationship_status || "current";
+        return <article className={`employee-spouse-card spouse-${state}`} key={record.id}>
+          <div className="employee-spouse-card-main">
+            <div className="employee-spouse-card-title"><strong>{record.wife_name}</strong><span className={`spouse-state-badge spouse-badge-${state}`}>{stateLabel(record)}</span></div>
+            <span>{record.identity_card_number}</span>
+            <small>{record.is_working ? "Working" : "Non-working"}</small>
+            {state === "former" && <small>Marriage ended {date(record.relationship_end_date)} · {record.marriage_end_reason === "death" ? "Death" : "Divorce"}</small>}
+            {state === "void" && <small>Correction reason: {record.correction_reason}</small>}
+            {(record.lifecycle_events || []).length > 0 && <details className="spouse-history"><summary>View history ({record.lifecycle_events.length})</summary><ol>{record.lifecycle_events.map((event) => <li key={event.id}><strong>{event.action === "marriage_ended" ? "Marriage ended" : "Record corrected"}</strong><span>{event.effective_date ? date(event.effective_date) : timestampDate(event.occurred_at)} · {event.actor?.full_name || "HMS user"}</span><small>{event.reason_text}</small></li>)}</ol></details>}
+          </div>
+          {canEdit && state !== "void" && <div className="employee-spouse-actions">
+            <button type="button" className="text-button" onClick={() => edit(record)}>Edit details</button>
+            {lifecycleAvailable && state === "current" && <button type="button" className="text-button" onClick={() => lifecycle(record, "end")}>End marriage</button>}
+            {lifecycleAvailable && <button type="button" className="text-button spouse-correction-action" onClick={() => lifecycle(record, "correct")}>Correct erroneous record</button>}
+          </div>}
+        </article>;
+      })}
+    </section>
+  );
+}
+
+function SpouseLifecycleDialog({ action, spouse, currentCount, statuses, busy, error, needsResultingStatus, onClose, onSubmit }) {
+  const [effectiveDate, setEffectiveDate] = useState(() => {
+    const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+    return `${parts.find((part) => part.type === "year")?.value}-${parts.find((part) => part.type === "month")?.value}-${parts.find((part) => part.type === "day")?.value}`;
+  });
+  const [reason, setReason] = useState("");
+  const [resultingStatusId, setResultingStatusId] = useState("");
+  const state = spouse.relationship_status || "current";
+  const needsStatus = needsResultingStatus || ((action === "end" || (action === "correct" && state === "current")) && currentCount === 1);
+  const options = statuses.filter((status) => status.is_married_status !== true);
+  const isEnd = action === "end";
+  const requiredMarker = reason === "divorce" ? "is_divorced_status" : reason === "death" ? "is_widowed_status" : null;
+  const markedStatuses = requiredMarker ? statuses.filter((status) => status[requiredMarker] === true) : [];
+  const reasonStatus = markedStatuses.length === 1 && markedStatuses[0].is_active === true && markedStatuses[0].is_married_status !== true ? markedStatuses[0] : null;
+  const statusSetupError = markedStatuses.length > 1
+    ? "More than one active marital status has this system marker. Ask a Setup Administrator to resolve the duplicate marker before continuing."
+    : markedStatuses.length === 1 && markedStatuses[0].is_active !== true
+      ? "The required canonical marital status is inactive. Ask a Setup Administrator to activate it before continuing."
+      : markedStatuses.length === 1 && markedStatuses[0].is_married_status === true
+        ? "The canonical status marker is invalid. Ask a Setup Administrator to review the marital status setup."
+        : "No single active canonical marital status is available. It may be missing, inactive, or ambiguously marked. Ask a Setup Administrator to review the spouse lifecycle status setup.";
+  const title = isEnd ? "End marriage" : "Correct erroneous spouse record";
+  return <Modal title={title} size="small" onClose={onClose} canDismiss={!busy} closeOnBackdrop={!busy}>
+      <form className="modal-grid spouse-lifecycle-form" onSubmit={(event) => {
+      event.preventDefault();
+        onSubmit({ expected_updated_at: spouse.updated_at, ...(isEnd ? { effective_date: effectiveDate, reason } : { reason: reason.trim() }), resulting_marital_status_id: needsStatus ? (isEnd ? reasonStatus?.id || null : resultingStatusId) : null });
+    }}>
+      <Notice kind={isEnd ? "warning" : "danger"}>{isEnd ? "The spouse will remain in the employee’s history, and any children will stay linked to this record." : "This record will be marked as a correction and retained. It will not be deleted, so child links remain intact."}</Notice>
+      {isEnd ? <>
+        <label>Effective date<input type="date" required value={effectiveDate} onChange={(event) => setEffectiveDate(event.target.value)} /></label>
+        <label>Reason<select required value={reason} onChange={(event) => { setReason(event.target.value); setResultingStatusId(""); }}><option value="">Choose a reason</option><option value="divorce">Divorce</option><option value="death">Death</option></select></label>
+      </> : <label>Correction reason<textarea required maxLength={2000} rows={3} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Explain why this spouse record is erroneous or duplicated." /></label>}
+      {needsStatus && isEnd && reason && (reasonStatus ? <div className="spouse-resulting-status"><span>Employee’s resulting marital status</span><strong>{reasonStatus.name}</strong><small>{reason === "divorce" ? "Divorce requires the canonical Divorced status." : "Death requires the canonical Widowed status."} This is the last current spouse record; confirm to apply it.</small></div> : <Notice kind="danger">{statusSetupError} Confirmation is disabled until the status is available and uniquely marked.</Notice>)}
+      {needsStatus && !isEnd && <label>Employee’s resulting marital status<select required value={resultingStatusId} onChange={(event) => setResultingStatusId(event.target.value)}><option value="">Choose a status</option>{options.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select><small>This correction is independent of divorce or death. Choose the resulting status explicitly.</small></label>}
+      {error && <Notice kind="danger">{error}</Notice>}
+      <footer className="modal-actions"><button type="button" className="secondary" disabled={busy} onClick={onClose}>Cancel</button><button className="primary" disabled={busy || (needsStatus && (isEnd ? !reasonStatus : !resultingStatusId))}>{busy ? "Saving…" : isEnd ? "Confirm marriage end" : "Confirm correction"}</button></footer>
+    </form>
+  </Modal>;
+}
+
 function FamilyEditor({
   type,
   item,
@@ -1495,7 +1564,7 @@ function FamilyEditor({
     initialForm,
   );
   const dirty = Object.keys(initialForm).some((key) => (form[key] ?? "") !== (initialForm[key] ?? ""));
-  const title = `${item?.id ? "Edit" : "Add"} ${type === "wife" ? "Wife" : "Child"}`;
+  const title = `${item?.id ? "Edit" : "Add"} ${type === "wife" ? "Spouse" : "Child"}`;
   const refresh = async () => {
     const latest = await refreshLatest(type, item.id);
     if (latest) setForm(latest);
@@ -1527,7 +1596,7 @@ function FamilyEditor({
         }}
       >
         <Field
-          label={type === "wife" ? "Wife Name" : "Child Name"}
+          label={type === "wife" ? "Spouse Name" : "Child Name"}
           name={type === "wife" ? "wife_name" : "child_name"}
           form={form}
           setForm={setForm}
@@ -1554,7 +1623,7 @@ function FamilyEditor({
           </label>
         ) : (
           <label>
-            Related Wife (optional)
+            Related Spouse (optional)
             <select
               value={form.wife_id || ""}
               onChange={(e) => setForm({ ...form, wife_id: e.target.value })}
@@ -1585,6 +1654,7 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
     "overview";
   const [tab, setTab] = useState(profileSection);
   const [editor, setEditor] = useState(null);
+  const [spouseLifecycle, setSpouseLifecycle] = useState(null);
   const [resign, setResign] = useState(false);
   const [busy, setBusy] = useState(false);
   const directoryReturn = profileDirectoryContext();
@@ -1651,6 +1721,7 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
     financial: !!employee.financial,
     documents: capabilities.includes("employees.documents.view"),
   };
+  const canEditPersonal = capabilities.includes("employees.personal.edit");
   const tabs = [
     "overview",
     ...Object.keys(can).filter((x) => can[x]),
@@ -1694,6 +1765,25 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
     } catch (e) {
       if (item && e.status === 409) setEditor({ ...editor, conflict: true });
       else toast(e.message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const saveSpouseLifecycle = async (action, spouse, body) => {
+    setBusy(true);
+    try {
+      if (action === "end") await employeesApi.endWifeMarriage(id, spouse.id, body, token);
+      else await employeesApi.correctWifeRecord(id, spouse.id, body, token);
+      setSpouseLifecycle(null);
+      await load(false);
+      toast(action === "end" ? "Marriage end recorded. The spouse record and child links remain in history." : "Spouse record marked as an audited correction. The record and child links remain in history.", "success");
+    } catch (error) {
+      if (error.code === "employee_spouse_resulting_status_required") setSpouseLifecycle((current) => ({ ...current, needsResultingStatus: true, error: error.message }));
+      else if (error.status === 409) {
+        setSpouseLifecycle(null);
+        await load(false);
+        toast(error.message || "This spouse record changed. Review the refreshed profile and try again.", "error");
+      } else setSpouseLifecycle((current) => ({ ...current, error: error.message || "The spouse update could not be saved." }));
     } finally {
       setBusy(false);
     }
@@ -1887,28 +1977,23 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
       {tab === "family" && (
         <DetailSection
           title="Family"
-          action={
+          action={canEditPersonal ? (
             <button
               className="secondary"
               onClick={() => setEditor({ type: "wife" })}
             >
               <UserRoundPlus size={15} />
-              Add Wife
+              Add Spouse
             </button>
-          }
+          ) : null}
         >
           <div className="family-columns">
-            <RecordList
-              title="Wives"
+            <SpouseLifecycleList
               records={employee.family.wives}
-              fields={(x) => (
-                <>
-                  <strong>{x.wife_name}</strong>
-                  <span>{x.identity_card_number}</span>
-                  <small>{x.is_working ? "Working" : "Non-working"}</small>
-                </>
-              )}
+              canEdit={canEditPersonal}
+              lifecycleAvailable={employee.family.lifecycle_available !== false}
               edit={(item) => setEditor({ type: "wife", item })}
+              lifecycle={(item, action) => setSpouseLifecycle({ spouse: item, action })}
             />
             <RecordList
               title="Children"
@@ -1923,15 +2008,15 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
                   </small>
                 </>
               )}
-              edit={(item) => setEditor({ type: "child", item })}
-              action={
+              edit={canEditPersonal ? (item) => setEditor({ type: "child", item }) : undefined}
+              action={canEditPersonal ? (
                 <button
                   className="text-button"
                   onClick={() => setEditor({ type: "child" })}
                 >
                   + Add Child
                 </button>
-              }
+              ) : null}
             />
           </div>
         </DetailSection>
@@ -2126,6 +2211,19 @@ export function EmployeeDetail({ id, token, go, toast, capabilities = [] }) {
           save={(body) => nestedSave(editor.type, editor.item, body)}
         />
       ) : null}
+      {spouseLifecycle && (
+        <SpouseLifecycleDialog
+          action={spouseLifecycle.action}
+          spouse={spouseLifecycle.spouse}
+          currentCount={(employee.family?.wives || []).filter((wife) => (wife.relationship_status || "current") === "current").length}
+          statuses={lookup?.["marital-statuses"] || []}
+          busy={busy}
+          error={spouseLifecycle.error}
+          needsResultingStatus={spouseLifecycle.needsResultingStatus}
+          onClose={() => setSpouseLifecycle(null)}
+          onSubmit={(body) => saveSpouseLifecycle(spouseLifecycle.action, spouseLifecycle.spouse, body)}
+        />
+      )}
       {editor?.type === "license" && (
         <LicenseEditor
           item={editor.item}

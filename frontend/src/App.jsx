@@ -27,11 +27,14 @@ import { capabilitiesApi, dashboardApi, employeesApi, invalidateCapabilitiesCach
 import { DocumentsCompliance, EmployeeDetail, EmployeeForm, EmployeesList } from "./Employees";
 import { ContractRenewals } from "./ContractRenewals";
 import { SocialInsurance } from "./SocialInsurance";
+import { HiringPlanSetup, ProjectStaffingQueue } from "./ProjectHiringPlan";
 import { workQueueDefinitions, workQueueHash } from "./workQueues";
 import { Dashboard } from "./Dashboard";
-import { DataQuality, Lifecycle } from "./PeopleOperations";
+import { Lifecycle } from "./PeopleOperations";
+import { ImportExportCenter } from "./ImportExportCenter";
 import { Modal } from "./Modal";
 import roleMetadata from "../../shared/role-metadata.json";
+import { hasCapability } from "./access";
 
 const groups = [
   {
@@ -50,6 +53,7 @@ const groups = [
       ["teams", "Teams"],
       ["positions", "Positions"],
       ["projects", "Projects"],
+      ["hiring-plans", "Hiring Plan"],
       ["governorates", "Governorates"],
     ],
   },
@@ -108,6 +112,7 @@ const itemIcons = {
   teams: Network,
   positions: BriefcaseBusiness,
   projects: FolderKanban,
+  "hiring-plans": FolderKanban,
   "shift-types": Clock3,
   religions: HeartPulse,
   "marital-statuses": UsersRound,
@@ -133,6 +138,7 @@ const landingSections = [
       ["teams", "Teams"],
       ["positions", "Positions"],
       ["projects", "Projects"],
+      ["hiring-plans", "Hiring Plan", "Plan headcount by project, department, and position"],
       ["governorates", "Governorates"],
     ],
   },
@@ -249,7 +255,7 @@ function SetupBreadcrumb({ group, current }) {
   );
 }
 
-function Login({ onSession }) {
+function Login({ onSession, transitioningOut, onTransitionComplete }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
@@ -257,7 +263,7 @@ function Login({ onSession }) {
   const [busy, setBusy] = useState(false);
   const submit = async (e) => {
     e.preventDefault();
-    if (busy) return;
+    if (busy || transitioningOut) return;
     setError("");
     if (!email || !password) return setError("Enter your email and password.");
     if (!authConfigured)
@@ -268,27 +274,56 @@ function Login({ onSession }) {
     try {
       const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password });
       if (authError) setError("Unable to sign in. Check your email and password.");
-      else onSession(data.session);
+      else {
+        onSession(data.session);
+        if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) onTransitionComplete();
+      }
     } catch {
       setError("Unable to sign in. Check your email and password.");
     } finally {
       setBusy(false);
     }
   };
+  useEffect(() => {
+    if (!transitioningOut) return undefined;
+    const fallback = window.setTimeout(onTransitionComplete, 850);
+    return () => window.clearTimeout(fallback);
+  }, [transitioningOut, onTransitionComplete]);
+  const finishExit = (event) => {
+    if (event.target === event.currentTarget && event.animationName === "login-scene-exit") onTransitionComplete();
+  };
+  const welcome = Array.from("Welcome back");
   return (
-    <main className="login-page">
-      <div className="workforce-visual" aria-hidden="true">
-        <div className="visual-grid" />
-        <div className="visual-orbit visual-orbit-one" />
-        <div className="visual-orbit visual-orbit-two" />
-        <svg className="visual-network" viewBox="0 0 800 900" preserveAspectRatio="none" focusable="false">
-          <path d="M42 145C214 178 260 285 392 330S630 365 762 426M-28 510C135 435 230 476 334 550S578 735 836 655M114 870C213 718 267 640 392 626S611 505 702 260M112 145C189 305 173 403 112 510M392 330C440 443 429 534 392 626M702 260C670 409 708 540 762 655" />
-          <circle cx="42" cy="145" r="3" /><circle cx="392" cy="330" r="4" /><circle cx="762" cy="426" r="3" /><circle cx="334" cy="550" r="3" /><circle cx="392" cy="626" r="4" /><circle cx="702" cy="260" r="3" /><circle cx="114" cy="870" r="3" />
+    <main className={`login-page${transitioningOut ? " is-exiting" : ""}`} onAnimationEnd={finishExit}>
+      <div className="login-dataflow" aria-hidden="true">
+        <svg viewBox="0 0 1440 900" preserveAspectRatio="none" focusable="false">
+          <defs>
+            <filter id="login-packet-glow" x="-200%" y="-200%" width="500%" height="500%"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          </defs>
+          <path id="login-route-top" className="data-route" d="M90 150 C310 64 515 95 750 160 S1110 230 1330 155" />
+          <path id="login-route-top-reverse" className="data-route" d="M1330 155 C1110 230 990 210 750 160 S310 64 90 150" />
+          <path id="login-route-mid" className="data-route route-tablet-hide" d="M80 430 C270 350 475 345 730 410" />
+          <path id="login-route-mid-reverse" className="data-route route-tablet-hide" d="M730 410 C475 345 270 350 80 430" />
+          <path id="login-route-low" className="data-route" d="M130 735 C375 835 635 810 850 710 S1160 620 1360 740" />
+          <path id="login-route-low-reverse" className="data-route route-mobile-hide" d="M1360 740 C1160 620 1030 655 850 710 S375 835 130 735" />
+          <path id="login-route-link" className="data-route route-tablet-hide route-mobile-hide" d="M80 430 C68 558 115 645 130 735" />
+          <g className="data-node node-top-left"><circle className="data-node-pulse" cx="90" cy="150" r="10"/><circle className="data-node-core" cx="90" cy="150" r="3.5"/></g>
+          <g className="data-node node-top-center"><circle className="data-node-pulse" cx="750" cy="160" r="11"/><circle className="data-node-core" cx="750" cy="160" r="4"/></g>
+          <g className="data-node node-top-right"><circle className="data-node-pulse" cx="1330" cy="155" r="10"/><circle className="data-node-core" cx="1330" cy="155" r="3.5"/></g>
+          <g className="data-node node-mid-left"><circle className="data-node-pulse" cx="80" cy="430" r="10"/><circle className="data-node-core" cx="80" cy="430" r="3.5"/></g>
+          <g className="data-node node-mid-center route-tablet-hide"><circle className="data-node-pulse" cx="730" cy="410" r="10"/><circle className="data-node-core" cx="730" cy="410" r="3.5"/></g>
+          <g className="data-node node-low-left"><circle className="data-node-pulse" cx="130" cy="735" r="10"/><circle className="data-node-core" cx="130" cy="735" r="3.5"/></g>
+          <g className="data-node node-low-center"><circle className="data-node-pulse" cx="850" cy="710" r="11"/><circle className="data-node-core" cx="850" cy="710" r="4"/></g>
+          <g className="data-node node-low-right"><circle className="data-node-pulse" cx="1360" cy="740" r="10"/><circle className="data-node-core" cx="1360" cy="740" r="3.5"/></g>
+          <circle className="data-packet" r="3.2" filter="url(#login-packet-glow)"><animateMotion dur="7.2s" begin="-2.4s" repeatCount="indefinite"><mpath href="#login-route-top"/></animateMotion></circle>
+          <circle className="data-packet packet-trail" r="2.1" filter="url(#login-packet-glow)"><animateMotion dur="7.2s" begin="-3.1s" repeatCount="indefinite"><mpath href="#login-route-top"/></animateMotion></circle>
+          <circle className="data-packet packet-reverse packet-mobile-hide" r="2.8" filter="url(#login-packet-glow)"><animateMotion dur="8.6s" begin="-4.2s" repeatCount="indefinite"><mpath href="#login-route-top-reverse"/></animateMotion></circle>
+          <circle className="data-packet route-tablet-hide" r="3" filter="url(#login-packet-glow)"><animateMotion dur="6.1s" begin="-1.7s" repeatCount="indefinite"><mpath href="#login-route-mid"/></animateMotion></circle>
+          <circle className="data-packet packet-reverse route-tablet-hide" r="2.6" filter="url(#login-packet-glow)"><animateMotion dur="9.2s" begin="-5s" repeatCount="indefinite"><mpath href="#login-route-mid-reverse"/></animateMotion></circle>
+          <circle className="data-packet packet-low" r="3.1" filter="url(#login-packet-glow)"><animateMotion dur="8.4s" begin="-3s" repeatCount="indefinite"><mpath href="#login-route-low"/></animateMotion></circle>
+          <circle className="data-packet packet-reverse packet-low packet-mobile-hide" r="2.6" filter="url(#login-packet-glow)"><animateMotion dur="6.8s" begin="-1s" repeatCount="indefinite"><mpath href="#login-route-low-reverse"/></animateMotion></circle>
+          <circle className="data-packet route-tablet-hide route-mobile-hide" r="2.5" filter="url(#login-packet-glow)"><animateMotion dur="5.4s" begin="-2.8s" repeatCount="indefinite"><mpath href="#login-route-link"/></animateMotion></circle>
         </svg>
-        <div className="visual-node visual-node-main"><span /></div>
-        <div className="visual-node visual-node-left"><span /></div>
-        <div className="visual-node visual-node-right"><span /></div>
-        <div className="visual-node visual-node-bottom"><span /></div>
       </div>
       <section className="login-brand-panel" aria-label="HR Management System">
         <div className="login-brand-content">
@@ -298,31 +333,14 @@ function Login({ onSession }) {
             </span>
             <span>HR Management System</span>
           </div>
-          <div className="login-brand-copy">
-            <p className="eyebrow">ONE SECURE WORKSPACE</p>
-            <h1>People operations, thoughtfully connected.</h1>
-            <p>Bring employee records, daily operations, and workforce insight together in one trusted place.</p>
-          </div>
-          <div className="login-value-list">
-            <span><b>01</b> People</span>
-            <span><b>02</b> Operations</span>
-            <span><b>03</b> Insights</span>
-          </div>
+          <p className="login-brand-support">A connected workspace for people and operations.</p>
         </div>
       </section>
       <section className="login-form-panel">
         <div className="login-form-shell">
-          <div className="login-mobile-brand">
-            <span className="login-logo-frame">
-              <img src={logo} alt="JUSHI" className="login-logo" />
-            </span>
-            <span>HR Management System</span>
-          </div>
           <div className="login-card">
             <div className="login-form-heading">
-              <p className="eyebrow">HR MANAGEMENT SYSTEM</p>
-              <h1>Welcome back</h1>
-              <p className="login-supporting-copy">Sign in to continue to your workspace.</p>
+              <h1 className="login-welcome" aria-label="Welcome back"><span aria-hidden="true">{welcome.map((letter, index) => <span className="login-welcome-letter" key={`${letter}-${index}`} style={{ "--letter-index": index }}>{letter === " " ? "\u00a0" : letter}</span>)}</span></h1>
             </div>
             <form onSubmit={submit} noValidate aria-busy={busy}>
               <label>
@@ -376,19 +394,20 @@ function Login({ onSession }) {
           </div>
         </div>
       </section>
+      <div className="login-credit">BY MOAZ SHIREF</div>
     </main>
   );
 }
 
-function Sidebar({ session, page, routeHash, setPage, logout, activePanel, setActivePanel, isOpen, onOpen, close }) {
+function Sidebar({ session, page, routeHash, setPage, logout, activePanel, setActivePanel, isOpen, onOpen, close, capabilities = [] }) {
   const user = session.user;
   const railRef = useRef(null);
   const panelRef = useRef(null);
   const [openSetupGroup, setOpenSetupGroup] = useState("Organization");
   const [openPeopleGroup, setOpenPeopleGroup] = useState("");
-  const peopleRoutes = ["people", "employees", "work-queues", "contracts", "lifecycle", "documents", "data-quality", "social-insurance"];
+  const peopleRoutes = ["people", "employees", "work-queues", "project-staffing", "import-export", "contracts", "lifecycle", "documents", "data-quality", "social-insurance"];
   const setupRoutes = [
-    "home", "users", "roles", "insurance", "departments", "teams", "positions", "projects",
+    "home", "users", "roles", "insurance", "departments", "teams", "positions", "projects", "hiring-plans",
     "governorates", "religions", "marital-statuses", "diplomas", "leaving-reasons", "license-types",
     "shift-types", "banks",
   ];
@@ -413,7 +432,7 @@ function Sidebar({ session, page, routeHash, setPage, logout, activePanel, setAc
     if (panel === "people" && !isPeople) setPage("employees");
   };
   const iconForRoute = (route) => ({
-    dashboard: LayoutDashboard, employees: UsersRound, "work-queues": Clock3, "contracts/renewals": FileText, documents: FileText, "social-insurance": ShieldCheck,
+    dashboard: LayoutDashboard, employees: UsersRound, "work-queues": Clock3, "project-staffing": FolderKanban, "contracts/renewals": FileText, documents: FileText, "social-insurance": ShieldCheck,
     departments: Building2, teams: Network, positions: BriefcaseBusiness, projects: FolderKanban,
     governorates: MapPinned, religions: ShieldCheck, "marital-statuses": UsersRound, diplomas: GraduationCap,
     "leaving-reasons": SlidersHorizontal, "license-types": FileText, "shift-types": Clock3, banks: Landmark,
@@ -486,9 +505,9 @@ function Sidebar({ session, page, routeHash, setPage, logout, activePanel, setAc
           <header><div><p>Module</p><h2>People</h2></div><button className="navigation-panel-close" onClick={() => { setActivePanel(null); close(); }} aria-label="Close navigation">×</button></header>
           <nav className="people-panel-nav">
             {panelItem("employees", "Employees", (page === "employees" || page.startsWith("employees/")) && !hasQueueContext)}
-            <section className={`navigation-panel-group${openPeopleGroup === "queues" || hasQueueContext || page.startsWith("contracts/") ? " open" : ""}`}>
-              <button type="button" className="navigation-panel-group-toggle" aria-expanded={openPeopleGroup === "queues" || hasQueueContext || page.startsWith("contracts/")} onClick={() => setOpenPeopleGroup((current) => current === "queues" ? "" : "queues")}><span>Work Queues</span><ChevronRight size={15} /></button>
-              {(openPeopleGroup === "queues" || hasQueueContext || page.startsWith("contracts/") || page === "social-insurance") && <div className="navigation-panel-group-items queue-panel-items">{panelItem("contracts/renewals", "Contracts", page === "contracts/renewals")}{panelItem("social-insurance?view=form_1_needs_attention", "Form 1 needs attention", page === "social-insurance" && socialInsuranceView === "form_1_needs_attention")}{panelItem("social-insurance?view=form_6_needs_attention", "Form 6 needs attention", page === "social-insurance" && socialInsuranceView === "form_6_needs_attention")}{panelItem("social-insurance?view=all", "All Social Insurance records", page === "social-insurance" && !socialInsuranceView.endsWith("_needs_attention"))}{queueGroups.map(([group, items]) => <div key={group} className="queue-panel-group"><p>{group}</p>{items.filter(([key]) => workQueueDefinitions[key]).map(([key, label]) => panelItem(workQueueHash(key), label, currentQueue === key))}</div>)}</div>}
+            <section className={`navigation-panel-group${openPeopleGroup === "queues" || hasQueueContext || page.startsWith("contracts/") || ["project-staffing","import-export"].includes(page) ? " open" : ""}`}>
+              <button type="button" className="navigation-panel-group-toggle" aria-expanded={openPeopleGroup === "queues" || hasQueueContext || page.startsWith("contracts/") || ["project-staffing","import-export"].includes(page)} onClick={() => setOpenPeopleGroup((current) => current === "queues" ? "" : "queues")}><span>Work Queues</span><ChevronRight size={15} /></button>
+              {(openPeopleGroup === "queues" || hasQueueContext || page.startsWith("contracts/") || page === "social-insurance" || ["project-staffing","import-export"].includes(page)) && <div className="navigation-panel-group-items queue-panel-items">{panelItem("contracts/renewals", "Contracts", page === "contracts/renewals")}{panelItem("social-insurance?view=form_1_needs_attention", "Form 1 needs attention", page === "social-insurance" && socialInsuranceView === "form_1_needs_attention")}{panelItem("social-insurance?view=form_6_needs_attention", "Form 6 needs attention", page === "social-insurance" && socialInsuranceView === "form_6_needs_attention")}{panelItem("social-insurance?view=all", "All Social Insurance records", page === "social-insurance" && !socialInsuranceView.endsWith("_needs_attention"))}{capabilities.includes("hiring_staffing.view") && panelItem("project-staffing", "Project Staffing", page === "project-staffing")}{hasCapability(capabilities, "import_export.view") && panelItem("import-export", "Import & Export Center", page === "import-export")}{queueGroups.map(([group, items]) => <div key={group} className="queue-panel-group"><p>{group}</p>{items.filter(([key]) => workQueueDefinitions[key]).map(([key, label]) => panelItem(workQueueHash(key), label, currentQueue === key))}</div>)}</div>}
             </section>
             {panelItem("documents", "Documents & Compliance", page === "documents")}
           </nav>
@@ -496,7 +515,7 @@ function Sidebar({ session, page, routeHash, setPage, logout, activePanel, setAc
         {activePanel === "setup" && <>
           <header><div><p>Configuration</p><h2>SetUp</h2></div><button className="navigation-panel-close" onClick={() => { setActivePanel(null); close(); }} aria-label="Close navigation">×</button></header>
           <nav className="navigation-panel-groups">
-            {setupGroup("Organization", ["departments", "teams", "positions", "projects", "governorates"].map((route) => panelItem(route, titleCase(route), page === route)))}
+            {setupGroup("Organization", ["departments", "teams", "positions", "projects", ...(capabilities.some((key) => ["hiring_plans.view", "hiring_plans.edit"].includes(key)) ? ["hiring-plans"] : []), "governorates"].map((route) => panelItem(route, titleCase(route), page === route)))}
             {setupGroup("Employee Reference Data", ["religions", "marital-statuses", "diplomas", "leaving-reasons", "license-types", "shift-types", "banks"].map((route) => panelItem(route, titleCase(route), page === route)))}
             {setupGroup("Access & Security", [panelItem("users", "Users", page === "users"), panelItem("roles", "Roles & Permissions", page === "roles")])}
             {setupGroup("Insurance", [panelItem("insurance", "Insurance Settings", page === "insurance")])}
@@ -1287,7 +1306,7 @@ function Insurance({ token, toast }) {
   );
 }
 
-function Home({ go }) {
+function Home({ go, capabilities = [] }) {
   return (
     <section className="home premium-home">
       <header className="section-head setup-page-head">
@@ -1301,7 +1320,7 @@ function Home({ go }) {
             <section className="landing-section" key={section.title}>
               <h2>{section.title}</h2>
               <div className="landing-rows">
-                {section.items.map(([id, label, description]) => {
+                {section.items.filter(([id]) => id !== "hiring-plans" || capabilities.some((key) => ["hiring_plans.view", "hiring_plans.edit"].includes(key))).map(([id, label, description]) => {
                   const Icon = itemIcons[id];
                   return (
                     <button
@@ -1397,7 +1416,7 @@ function AppShell({ session, onLogout }) {
   const go = (id) => (location.hash = id);
   const moduleContext = page === "dashboard"
     ? ["Workspace", "Workforce intelligence"]
-    : page.startsWith("employees") || page.startsWith("contracts") || ["people", "documents", "social-insurance", "work-queues", "lifecycle", "data-quality"].includes(page)
+    : page.startsWith("employees") || page.startsWith("contracts") || ["people", "documents", "social-insurance", "work-queues", "project-staffing", "import-export", "lifecycle", "data-quality"].includes(page)
       ? ["Workspace", "People operations"]
       : ["Workspace", "Organization settings"];
   const employeeParts = page.split("/");
@@ -1410,7 +1429,7 @@ function AppShell({ session, onLogout }) {
     : page === "work-queues" ? <WorkQueuesRedirect go={go} />
     : page === "contracts/renewals" ? <ContractRenewals token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
     : page === "lifecycle" ? <Lifecycle go={go} />
-    : page === "data-quality" ? <DataQuality go={go} />
+    : page === "import-export" || page === "data-quality" ? <ImportExportCenter token={session.access_token} />
     : page === "employees" ? (
       <EmployeesList token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
     ) : page === "employees/new" ? (
@@ -1419,6 +1438,10 @@ function AppShell({ session, onLogout }) {
       <DocumentsCompliance token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
     ) : page === "social-insurance" ? (
       <SocialInsurance token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
+    ) : page === "hiring-plans" ? (
+      <HiringPlanSetup token={session.access_token} toast={notify} canEdit={capabilities.includes("hiring_plans.edit")} />
+    ) : page === "project-staffing" ? (
+      <ProjectStaffingQueue token={session.access_token} toast={notify} go={go} canManage={capabilities.some((key) => ["hiring_plans.view", "hiring_plans.edit"].includes(key))} canViewEmployees={capabilities.includes("employees.view")} />
     ) : employeeParts[0] === "employees" && employeeParts[2] === "edit" ? (
       <EmployeeEditorLoader id={employeeParts[1]} token={session.access_token} toast={notify} go={go} capabilities={capabilities} />
     ) : employeeParts[0] === "employees" && employeeParts[1] ? (
@@ -1431,7 +1454,7 @@ function AppShell({ session, onLogout }) {
     ) : page === "insurance" ? (
       <Insurance token={session.access_token} toast={notify} />
     ) : page === "home" ? (
-      <Home go={go} />
+      <Home go={go} capabilities={capabilities} />
     ) : (
       <MasterData resource={page} token={session.access_token} toast={notify} />
     );
@@ -1446,10 +1469,11 @@ function AppShell({ session, onLogout }) {
         }}
         logout={onLogout}
         isOpen={nav}
-        onOpen={() => { setNav(true); setActivePanel((current) => current || (page.startsWith("dashboard") ? "analytics" : page.startsWith("employees") || ["people", "work-queues", "documents", "social-insurance", "lifecycle", "data-quality"].includes(page) ? "people" : "setup")); }}
+        onOpen={() => { setNav(true); setActivePanel((current) => current || (page.startsWith("dashboard") ? "analytics" : page.startsWith("employees") || ["people", "work-queues", "project-staffing", "import-export", "documents", "social-insurance", "lifecycle", "data-quality"].includes(page) ? "people" : "setup")); }}
         close={() => setNav(false)}
         activePanel={activePanel}
         setActivePanel={setActivePanel}
+        capabilities={capabilities}
       />
       <main className="main-content">
         <header className="topbar">
@@ -1498,29 +1522,41 @@ export default function App() {
     },
   }), []);
   const [session, setSession] = useState(() => localDevAuthBypass ? devSession : null);
+  const [loginOverlayVisible, setLoginOverlayVisible] = useState(() => !localDevAuthBypass);
+  const [loginTransitioningOut, setLoginTransitioningOut] = useState(false);
   useEffect(() => {
     if (localDevAuthBypass) return undefined;
     if (!supabase) return;
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      if (data.session) setLoginOverlayVisible(false);
+    });
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_e, s) => {
-    if (!s) {
-      invalidateCapabilitiesCache();
-      invalidateEmployeeLookupCache();
-    }
+      if (!s) {
+        invalidateCapabilitiesCache();
+        invalidateEmployeeLookupCache();
+        setLoginTransitioningOut(false);
+        setLoginOverlayVisible(true);
+      }
       setSession(s);
     });
     return () => subscription.unsubscribe();
   }, []);
-  return session ? (
-    <AppShell session={session} onLogout={() => {
-      if (localDevAuthBypass) return;
-      invalidateCapabilitiesCache();
-      invalidateEmployeeLookupCache();
-      supabase.auth.signOut();
-    }} />
-  ) : (
-    <Login onSession={setSession} />
+  return (
+    <>
+      {session && <AppShell session={session} onLogout={() => {
+        if (localDevAuthBypass) return;
+        invalidateCapabilitiesCache();
+        invalidateEmployeeLookupCache();
+        supabase.auth.signOut();
+      }} />}
+      {loginOverlayVisible && <Login
+        transitioningOut={loginTransitioningOut}
+        onSession={(nextSession) => { setSession(nextSession); setLoginTransitioningOut(true); }}
+        onTransitionComplete={() => { setLoginOverlayVisible(false); setLoginTransitioningOut(false); }}
+      />}
+    </>
   );
 }
